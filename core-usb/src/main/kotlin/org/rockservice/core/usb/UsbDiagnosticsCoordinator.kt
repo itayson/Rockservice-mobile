@@ -55,7 +55,8 @@ class AndroidUsbDiagnosticsScanner(
             throw cancellation
         } catch (error: Exception) {
             UsbDiagnosticsState.Error(
-                message = error.message ?: "Failed to enumerate USB devices.",
+                message = error.message
+                    ?: "Falha ao enumerar dispositivos USB. Reconecte o dispositivo e tente novamente.",
             )
         }
 }
