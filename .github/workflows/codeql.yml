@@ -57,3 +57,6 @@ jobs:
           ./gradlew --no-daemon :app:assembleDebug :native-rockchip:assembleDebug :native-image-tools:assembleDebug
 
       - uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          upload-database: false
