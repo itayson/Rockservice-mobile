@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 android {
-    namespace = "org.rockservice.native.rockchip"
+    namespace = "org.rockservice.ndk.rockchip"
     compileSdk = 36
     defaultConfig {
         minSdk = 26

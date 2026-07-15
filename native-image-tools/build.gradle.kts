@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 android {
-    namespace = "org.rockservice.native.imagetools"
+    namespace = "org.rockservice.ndk.imagetools"
     compileSdk = 36
     defaultConfig {
         minSdk = 26
