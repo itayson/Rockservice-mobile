@@ -10,6 +10,8 @@ import android.hardware.usb.UsbManager
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import org.rockservice.core.usb.RockchipUsbClassifier
 import org.rockservice.core.usb.UsbDeviceDescriptor
@@ -25,48 +27,53 @@ internal class AndroidRockchipReadOnlyTransport(
     private val io: RockchipUsbIo,
 ) : RockchipReadOnlyTransport {
     private val closed = AtomicBoolean(false)
+    private val operationMutex = Mutex()
 
     override suspend fun exchange(
         command: ByteArray,
         responseLengthRange: IntRange,
         timeoutMillis: Long,
     ): RockchipRawExchange = withTimeout(timeoutMillis) {
-        check(!closed.get()) { "Rockchip read-only transport is closed." }
-        require(command.size == RockchipReadOnlyProtocolCodec.COMMAND_BLOCK_WRAPPER_SIZE) {
-            "Only validated Rockchip command block wrappers are accepted."
-        }
-        require(responseLengthRange.first >= 0 && responseLengthRange.last <= MAXIMUM_RESPONSE_BYTES) {
-            "Rockchip response range exceeds the read-only transport limit."
-        }
-        val timeout = timeoutMillis.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        currentCoroutineContext().ensureActive()
+        operationMutex.withLock {
+            check(!closed.get()) { "Rockchip read-only transport is closed." }
+            require(command.size == RockchipReadOnlyProtocolCodec.COMMAND_BLOCK_WRAPPER_SIZE) {
+                "Only validated Rockchip command block wrappers are accepted."
+            }
+            require(responseLengthRange.first >= 0 && responseLengthRange.last <= MAXIMUM_RESPONSE_BYTES) {
+                "Rockchip response range exceeds the read-only transport limit."
+            }
+            val timeout = timeoutMillis.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            currentCoroutineContext().ensureActive()
 
-        val written = io.write(command, timeout)
-        check(written == command.size) {
-            "Rockchip command short write: expected ${command.size} bytes, wrote $written."
-        }
-        currentCoroutineContext().ensureActive()
+            val written = io.write(command, timeout)
+            check(written == command.size) {
+                "Rockchip command short write: expected ${command.size} bytes, wrote $written."
+            }
+            currentCoroutineContext().ensureActive()
 
-        val data = if (responseLengthRange.last == 0) {
-            ByteArray(0)
-        } else {
-            io.read(responseLengthRange.last, timeout).also { bytes ->
-                check(bytes.size in responseLengthRange) {
-                    "Rockchip data short/invalid read: expected $responseLengthRange bytes, read ${bytes.size}."
+            val data = if (responseLengthRange.last == 0) {
+                ByteArray(0)
+            } else {
+                io.read(responseLengthRange.last, timeout).also { bytes ->
+                    check(bytes.size in responseLengthRange) {
+                        "Rockchip data short/invalid read: expected $responseLengthRange bytes, read ${bytes.size}."
+                    }
                 }
             }
-        }
-        currentCoroutineContext().ensureActive()
+            currentCoroutineContext().ensureActive()
 
-        val status = io.read(RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE, timeout)
-        check(status.size == RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE) {
-            "Rockchip CSW short read: expected ${RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE} bytes, read ${status.size}."
+            val status = io.read(RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE, timeout)
+            check(status.size == RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE) {
+                "Rockchip CSW short read: expected ${RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE} bytes, read ${status.size}."
+            }
+            RockchipRawExchange(data = data, statusBytes = status)
         }
-        RockchipRawExchange(data = data, statusBytes = status)
     }
 
     override suspend fun close() {
-        if (closed.compareAndSet(false, true)) io.close()
+        operationMutex.withLock {
+            if (closed.compareAndSet(false, true)) io.close()
+        }
     }
 
     private companion object {
@@ -165,7 +172,9 @@ private class AndroidRockchipUsbIo(
 
     override fun write(bytes: ByteArray, timeoutMillis: Int): Int {
         check(!closed.get()) { "Rockchip USB connection is closed." }
-        return connection.bulkTransfer(bulkOut, bytes, bytes.size, timeoutMillis)
+        val count = connection.bulkTransfer(bulkOut, bytes, bytes.size, timeoutMillis)
+        check(count >= 0) { "Rockchip USB bulk write failed or timed out." }
+        return count
     }
 
     override fun read(maximumLength: Int, timeoutMillis: Int): ByteArray {
