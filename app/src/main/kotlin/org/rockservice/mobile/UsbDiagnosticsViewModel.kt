@@ -28,9 +28,11 @@ internal class UsbDiagnosticsViewModel : ViewModel() {
         }
     }
 
-    /** Delegates target selection to the coordinator's fresh-enumeration policy. */
+    /** Serializes target selection with any in-flight refresh through the core coordinator. */
     fun selectTarget(transportId: String) {
-        coordinator.selectTarget(transportId)
+        viewModelScope.launch {
+            coordinator.selectTarget(transportId)
+        }
     }
 
     /** Cancels an in-flight refresh before the owning Android host closes its USB resources. */
