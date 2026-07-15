@@ -1,10 +1,19 @@
 # Arquitetura
 
-Clean Architecture com fluxo UI → ViewModel/use case → política → porta → adaptador.
+## Estado atual do bootstrap
+
+O bootstrap atual ainda não implementa a cadeia completa de Clean Architecture no entry point. `MainActivity` instancia `CapabilityDetector` diretamente na composição para manter a primeira entrega mínima e verificável.
+
+Esse acoplamento é temporário e não deve ser usado como precedente para operações de hardware, firmware, shell, root ou escrita. Antes da introdução de backends reais, a composição deve migrar para ViewModel/use cases e portas explícitas.
+
+## Arquitetura alvo
+
+Fluxo planejado: UI → ViewModel/use case → política → porta → adaptador.
 
 ```mermaid
 flowchart LR
-  UI[Compose UI] --> UC[Casos de uso]
+  UI[Compose UI] --> VM[ViewModel]
+  VM --> UC[Casos de uso]
   UC --> POL[Políticas de segurança]
   UC --> PORT[Interfaces/ports]
   PORT --> USB[Android USB Host]
@@ -19,8 +28,9 @@ flowchart LR
 2. Operações críticas exigem alvo único, validação e confirmação textual.
 3. Parsers tratam todo arquivo como não confiável.
 4. NDK fica atrás de interfaces Kotlin.
-5. Escrita real permanece desativada por build flag.
+5. Escrita real permanece desativada por build flag e por política até os gates de segurança serem implementados.
 6. Compatibilidade precisa de evidência e data de teste.
+7. Backends reais devem possuir lifecycle explícito, timeout, cancelamento cooperativo e encerramento idempotente.
 
 ## Fluxo USB
 
@@ -48,7 +58,8 @@ flowchart TD
   V --> B[Recomendar/confirmar backup]
   B --> P[Checar bateria, energia e suspensão]
   P --> T[Exigir frase textual]
-  T --> W[Gravar por backend aprovado]
+  T --> RV[Revalidar alvo imediatamente antes da escrita]
+  RV --> W[Gravar por backend aprovado]
   W --> R[Reler e verificar hash]
   R --> REP[Gerar relatório]
 ```
