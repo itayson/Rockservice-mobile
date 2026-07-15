@@ -57,8 +57,8 @@ object RockchipMetadataParsers {
     }
 
     fun parseStorage(data: ByteArray): RockchipStorageInfo {
-        require(data.size == RockchipReadOnlyOperation.READ_STORAGE.transferLength) {
-            "Storage response must contain exactly 4 bytes."
+        require(data.size == LEGACY_STORAGE_RESPONSE_BYTES) {
+            "Storage response must contain exactly $LEGACY_STORAGE_RESPONSE_BYTES bytes."
         }
 
         val bitMask = ByteBuffer.wrap(data)
@@ -83,4 +83,6 @@ object RockchipMetadataParsers {
 
     private fun ByteArray.toHex(): String =
         joinToString(separator = "") { byte -> "%02X".format(byte.toInt() and 0xFF) }
+
+    private const val LEGACY_STORAGE_RESPONSE_BYTES = 4
 }
