@@ -85,12 +85,14 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
                         session.close()
                     }
                 }
-            } catch (timeout: TimeoutCancellationException) {
-                Log.w(TAG, "Timed out while closing Rockchip metadata probe session.", timeout)
+            } catch (_: TimeoutCancellationException) {
+                requiresReconnect = true
             } catch (error: SecurityException) {
                 Log.w(TAG, "Android denied access while closing Rockchip metadata probe session.", error)
+                requiresReconnect = true
             } catch (error: IllegalStateException) {
                 Log.w(TAG, "Failed to close Rockchip metadata probe session.", error)
+                requiresReconnect = true
             }
         }
 
