@@ -40,7 +40,7 @@ class AndroidRockchipReadOnlyTransportTest {
     }
 
     @Test
-    fun `short command write fails closed`() = runTest {
+    fun `short command transfer fails at command stage`() = runTest {
         val io = FakeRockchipUsbIo(writeResult = 30)
         val transport = AndroidRockchipReadOnlyTransport(io)
 
@@ -52,8 +52,10 @@ class AndroidRockchipReadOnlyTransportTest {
             )
         }.exceptionOrNull()
 
-        assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("short write"))
+        assertTrue(error is RockchipUsbTransportException)
+        error as RockchipUsbTransportException
+        assertEquals(RockchipTransportStage.COMMAND_WRITE, error.stage)
+        assertTrue(error.message.orEmpty().contains("short write"))
     }
 
     @Test
@@ -69,12 +71,14 @@ class AndroidRockchipReadOnlyTransportTest {
             )
         }.exceptionOrNull()
 
-        assertTrue(error is IllegalStateException)
+        assertTrue(error is RockchipUsbTransportException)
+        error as RockchipUsbTransportException
+        assertEquals(RockchipTransportStage.DATA_READ, error.stage)
         assertEquals(listOf(5), io.requestedReadLengths)
     }
 
     @Test
-    fun `short CSW read fails closed`() = runTest {
+    fun `short CSW read fails at status stage`() = runTest {
         val io = FakeRockchipUsbIo(reads = ArrayDeque(listOf(ByteArray(12))))
         val transport = AndroidRockchipReadOnlyTransport(io)
 
@@ -86,8 +90,10 @@ class AndroidRockchipReadOnlyTransportTest {
             )
         }.exceptionOrNull()
 
-        assertTrue(error is IllegalStateException)
-        assertTrue(error?.message.orEmpty().contains("CSW short read"))
+        assertTrue(error is RockchipUsbTransportException)
+        error as RockchipUsbTransportException
+        assertEquals(RockchipTransportStage.STATUS_READ, error.stage)
+        assertTrue(error.message.orEmpty().contains("short CSW"))
     }
 
     @Test
@@ -123,6 +129,7 @@ class AndroidRockchipReadOnlyTransportTest {
         private val writeResult: Int = RockchipReadOnlyProtocolCodec.COMMAND_BLOCK_WRAPPER_SIZE,
         private val reads: ArrayDeque<ByteArray> = ArrayDeque(),
     ) : RockchipUsbIo {
+        override val method: RockchipUsbIoMethod = RockchipUsbIoMethod.USB_REQUEST
         val writes = mutableListOf<ByteArray>()
         val requestedReadLengths = mutableListOf<Int>()
         var closeCount = 0

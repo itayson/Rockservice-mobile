@@ -7,6 +7,9 @@ import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
+import android.hardware.usb.UsbRequest
+import java.nio.ByteBuffer
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -16,7 +19,26 @@ import kotlinx.coroutines.withTimeout
 import org.rockservice.core.usb.RockchipUsbClassifier
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
+internal enum class RockchipUsbIoMethod(val displayName: String) {
+    BULK_TRANSFER("bulkTransfer"),
+    USB_REQUEST("UsbRequest"),
+}
+
+internal enum class RockchipTransportStage(val displayName: String) {
+    COMMAND_WRITE("COMMAND_WRITE"),
+    DATA_READ("DATA_READ"),
+    STATUS_READ("STATUS_READ"),
+}
+
+internal class RockchipUsbTransportException(
+    val stage: RockchipTransportStage,
+    val method: RockchipUsbIoMethod,
+    detail: String,
+    cause: Throwable? = null,
+) : IllegalStateException("${method.displayName}/${stage.displayName}: $detail", cause)
+
 internal interface RockchipUsbIo {
+    val method: RockchipUsbIoMethod
     fun write(bytes: ByteArray, timeoutMillis: Int): Int
     fun read(maximumLength: Int, timeoutMillis: Int): ByteArray
     fun close()
@@ -42,29 +64,50 @@ internal class AndroidRockchipReadOnlyTransport(
             require(responseLengthRange.first >= 0 && responseLengthRange.last <= MAXIMUM_RESPONSE_BYTES) {
                 "Rockchip response range exceeds the read-only transport limit."
             }
-            val timeout = timeoutMillis.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val ioTimeout = (timeoutMillis - IO_TIMEOUT_MARGIN_MILLIS)
+                .coerceAtLeast(1L)
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+                .toInt()
             currentCoroutineContext().ensureActive()
 
-            val written = io.write(command, timeout)
-            check(written == command.size) {
-                "Rockchip command short write: expected ${command.size} bytes, wrote $written."
+            val written = atStage(RockchipTransportStage.COMMAND_WRITE) {
+                io.write(command, ioTimeout)
+            }
+            if (written != command.size) {
+                throw RockchipUsbTransportException(
+                    stage = RockchipTransportStage.COMMAND_WRITE,
+                    method = io.method,
+                    detail = "short write: expected ${command.size} bytes, wrote $written.",
+                )
             }
             currentCoroutineContext().ensureActive()
 
             val data = if (responseLengthRange.last == 0) {
                 ByteArray(0)
             } else {
-                io.read(responseLengthRange.last, timeout).also { bytes ->
-                    check(bytes.size in responseLengthRange) {
-                        "Rockchip data short/invalid read: expected $responseLengthRange bytes, read ${bytes.size}."
+                atStage(RockchipTransportStage.DATA_READ) {
+                    io.read(responseLengthRange.last, ioTimeout)
+                }.also { bytes ->
+                    if (bytes.size !in responseLengthRange) {
+                        throw RockchipUsbTransportException(
+                            stage = RockchipTransportStage.DATA_READ,
+                            method = io.method,
+                            detail = "unexpected length: expected $responseLengthRange bytes, read ${bytes.size}.",
+                        )
                     }
                 }
             }
             currentCoroutineContext().ensureActive()
 
-            val status = io.read(RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE, timeout)
-            check(status.size == RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE) {
-                "Rockchip CSW short read: expected ${RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE} bytes, read ${status.size}."
+            val status = atStage(RockchipTransportStage.STATUS_READ) {
+                io.read(RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE, ioTimeout)
+            }
+            if (status.size != RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE) {
+                throw RockchipUsbTransportException(
+                    stage = RockchipTransportStage.STATUS_READ,
+                    method = io.method,
+                    detail = "short CSW: expected ${RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE} bytes, read ${status.size}.",
+                )
             }
             RockchipRawExchange(data = data, statusBytes = status)
         }
@@ -76,8 +119,25 @@ internal class AndroidRockchipReadOnlyTransport(
         }
     }
 
+    private inline fun <T> atStage(stage: RockchipTransportStage, block: () -> T): T =
+        try {
+            block()
+        } catch (error: RockchipUsbTransportException) {
+            throw error
+        } catch (error: RuntimeException) {
+            throw RockchipUsbTransportException(
+                stage = stage,
+                method = io.method,
+                detail = error.message?.take(MAXIMUM_ERROR_DETAIL_LENGTH)?.ifBlank { null }
+                    ?: error.javaClass.simpleName,
+                cause = error,
+            )
+        }
+
     private companion object {
         const val MAXIMUM_RESPONSE_BYTES = 512
+        const val IO_TIMEOUT_MARGIN_MILLIS = 250L
+        const val MAXIMUM_ERROR_DETAIL_LENGTH = 180
     }
 }
 
@@ -87,7 +147,10 @@ internal class AndroidRockchipReadOnlyTransportFactory(
     private val usbManager: UsbManager = context.applicationContext
         .getSystemService(Context.USB_SERVICE) as UsbManager,
 ) {
-    fun open(expected: UsbDeviceDescriptor): AndroidRockchipReadOnlyTransport {
+    fun open(
+        expected: UsbDeviceDescriptor,
+        method: RockchipUsbIoMethod = RockchipUsbIoMethod.BULK_TRANSFER,
+    ): AndroidRockchipReadOnlyTransport {
         val transportId = requireNotNull(expected.transportId) {
             "Rockchip transport requires an explicitly selected target."
         }
@@ -119,9 +182,21 @@ internal class AndroidRockchipReadOnlyTransportFactory(
             check(connection.claimInterface(usbInterface, false)) {
                 "Android failed to claim the Rockchip interface without force."
             }
-            return AndroidRockchipReadOnlyTransport(
-                AndroidRockchipUsbIo(connection, usbInterface, bulkIn, bulkOut),
-            )
+            val io = when (method) {
+                RockchipUsbIoMethod.BULK_TRANSFER -> AndroidRockchipBulkTransferIo(
+                    connection = connection,
+                    usbInterface = usbInterface,
+                    bulkIn = bulkIn,
+                    bulkOut = bulkOut,
+                )
+                RockchipUsbIoMethod.USB_REQUEST -> AndroidRockchipUsbRequestIo(
+                    connection = connection,
+                    usbInterface = usbInterface,
+                    bulkIn = bulkIn,
+                    bulkOut = bulkOut,
+                )
+            }
+            return AndroidRockchipReadOnlyTransport(io)
         } catch (error: Throwable) {
             connection.close()
             throw error
@@ -162,18 +237,34 @@ internal class AndroidRockchipReadOnlyTransportFactory(
     }
 }
 
-private class AndroidRockchipUsbIo(
-    private val connection: UsbDeviceConnection,
+private abstract class AndroidRockchipUsbIoBase(
+    protected val connection: UsbDeviceConnection,
     private val usbInterface: UsbInterface,
+) : RockchipUsbIo {
+    protected val closed = AtomicBoolean(false)
+
+    final override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        try {
+            connection.releaseInterface(usbInterface)
+        } finally {
+            connection.close()
+        }
+    }
+}
+
+private class AndroidRockchipBulkTransferIo(
+    connection: UsbDeviceConnection,
+    usbInterface: UsbInterface,
     private val bulkIn: UsbEndpoint,
     private val bulkOut: UsbEndpoint,
-) : RockchipUsbIo {
-    private val closed = AtomicBoolean(false)
+) : AndroidRockchipUsbIoBase(connection, usbInterface) {
+    override val method: RockchipUsbIoMethod = RockchipUsbIoMethod.BULK_TRANSFER
 
     override fun write(bytes: ByteArray, timeoutMillis: Int): Int {
         check(!closed.get()) { "Rockchip USB connection is closed." }
         val count = connection.bulkTransfer(bulkOut, bytes, bytes.size, timeoutMillis)
-        check(count >= 0) { "Rockchip USB bulk write failed or timed out." }
+        check(count >= 0) { "bulk OUT failed or timed out after $timeoutMillis ms." }
         return count
     }
 
@@ -181,16 +272,67 @@ private class AndroidRockchipUsbIo(
         check(!closed.get()) { "Rockchip USB connection is closed." }
         val buffer = ByteArray(maximumLength)
         val count = connection.bulkTransfer(bulkIn, buffer, buffer.size, timeoutMillis)
-        check(count >= 0) { "Rockchip USB bulk read failed or timed out." }
+        check(count >= 0) { "bulk IN failed or timed out after $timeoutMillis ms." }
         return buffer.copyOf(count)
     }
+}
 
-    override fun close() {
-        if (!closed.compareAndSet(false, true)) return
+private class AndroidRockchipUsbRequestIo(
+    connection: UsbDeviceConnection,
+    usbInterface: UsbInterface,
+    private val bulkIn: UsbEndpoint,
+    private val bulkOut: UsbEndpoint,
+) : AndroidRockchipUsbIoBase(connection, usbInterface) {
+    override val method: RockchipUsbIoMethod = RockchipUsbIoMethod.USB_REQUEST
+
+    override fun write(bytes: ByteArray, timeoutMillis: Int): Int {
+        check(!closed.get()) { "Rockchip USB connection is closed." }
+        val buffer = ByteBuffer.allocateDirect(bytes.size)
+        buffer.put(bytes)
+        buffer.flip()
+        return executeRequest(bulkOut, buffer, timeoutMillis)
+    }
+
+    override fun read(maximumLength: Int, timeoutMillis: Int): ByteArray {
+        check(!closed.get()) { "Rockchip USB connection is closed." }
+        val buffer = ByteBuffer.allocateDirect(maximumLength)
+        val count = executeRequest(bulkIn, buffer, timeoutMillis)
+        buffer.flip()
+        return ByteArray(count).also(buffer::get)
+    }
+
+    private fun executeRequest(
+        endpoint: UsbEndpoint,
+        buffer: ByteBuffer,
+        timeoutMillis: Int,
+    ): Int {
+        val request = UsbRequest()
+        check(request.initialize(connection, endpoint)) {
+            "UsbRequest initialization failed for endpoint 0x${endpoint.address.toString(16)}."
+        }
+        val requestToken = Any()
+        request.setClientData(requestToken)
+        var queued = false
+        var completed = false
         try {
-            connection.releaseInterface(usbInterface)
+            check(request.queue(buffer)) {
+                "UsbRequest queue failed for endpoint 0x${endpoint.address.toString(16)}."
+            }
+            queued = true
+            val returned = try {
+                connection.requestWait(timeoutMillis.toLong())
+            } catch (timeout: TimeoutException) {
+                throw IllegalStateException("UsbRequest timed out after $timeoutMillis ms.", timeout)
+            }
+            check(returned != null) { "UsbRequest completed with an Android USB error." }
+            check(returned === request || returned.clientData === requestToken) {
+                "UsbRequest completion did not match the queued Rockchip request."
+            }
+            completed = true
+            return buffer.position()
         } finally {
-            connection.close()
+            if (queued && !completed) request.cancel()
+            request.close()
         }
     }
 }
