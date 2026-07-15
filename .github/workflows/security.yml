@@ -40,14 +40,37 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          fetch-depth: 0
           persist-credentials: false
 
+      - name: Guard dependency manifests in stacked pull requests
+        if: github.event.pull_request.base.ref != 'main'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          dependency_files="$(printf '%s\n' "$changed_files" | grep -E '(^|/)(build\.gradle(\.kts)?|settings\.gradle(\.kts)?|gradle/libs\.versions\.toml|gradle-wrapper\.properties|gradle\.lockfile)$' || true)"
+          if [ -n "$dependency_files" ]; then
+            echo "::error title=Stacked dependency change blocked::Dependency manifests changed in a PR whose base is not main. Retarget after the base branch merges so Dependency Review can evaluate the complete graph."
+            printf '%s\n' "$dependency_files"
+            exit 1
+          fi
+          echo "No dependency manifest changes detected in this stacked pull request."
+
       - name: Review dependency changes
+        if: github.event.pull_request.base.ref == 'main'
         id: dependency-review
-        continue-on-error: ${{ github.event.pull_request.number == 1 && github.event.pull_request.base.ref == 'main' }}
+        continue-on-error: ${{ github.event.pull_request.number == 1 }}
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
 
       - name: Record first-bootstrap limitation
         if: steps.dependency-review.outcome == 'failure' && github.event.pull_request.number == 1 && github.event.pull_request.base.ref == 'main'
         run: |
-          echo "::warning title=First bootstrap exception::Dependency Review cannot establish a complete base snapshot for PR #1. This exception is scoped only to PR #1; all subsequent pull requests fail closed."
+          echo "::warning title=First bootstrap exception::Dependency Review cannot establish a complete base snapshot for PR #1. This exception is scoped only to PR #1; all subsequent pull requests against main fail closed."
+
+      - name: Record stacked pull request limitation
+        if: github.event.pull_request.base.ref != 'main'
+        run: |
+          echo "::notice title=Stacked PR dependency guard::Full Dependency Review will run after this PR targets main. Until then, dependency manifest changes are blocked."
