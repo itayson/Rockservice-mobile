@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -40,6 +41,7 @@ internal data class FirmwareLabScreenState(
 internal class FirmwareLabViewModel : ViewModel() {
     private val analyzer = FirmwareLabAnalyzer()
     private val mutableState = MutableStateFlow(FirmwareLabScreenState())
+    private val analysisGeneration = AtomicLong(0L)
     private var analysisJob: Job? = null
     private var exportJob: Job? = null
 
@@ -47,11 +49,14 @@ internal class FirmwareLabViewModel : ViewModel() {
 
     /** Cancels a previous analysis and analyzes the selected read-only document on an IO dispatcher. */
     fun analyze(contentResolver: ContentResolver, uri: Uri) {
+        val generation = analysisGeneration.incrementAndGet()
         analysisJob?.cancel()
+        exportJob?.cancel()
         analysisJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val metadata = readDocumentMetadata(contentResolver, uri)
-                mutableState.value = FirmwareLabScreenState(
+                publishAnalysis(
+                    generation = generation,
                     analysis = FirmwareLabAnalysisState.Analyzing(metadata.displayName),
                 )
                 val report = analyzer.analyze(
@@ -61,19 +66,26 @@ internal class FirmwareLabViewModel : ViewModel() {
                     contentResolver.openInputStream(uri)?.buffered()
                         ?: throw IOException("O provedor de documentos nao abriu o arquivo selecionado.")
                 }
-                mutableState.value = FirmwareLabScreenState(
+                publishAnalysis(
+                    generation = generation,
                     analysis = FirmwareLabAnalysisState.Ready(report),
                 )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: SecurityException) {
-                publishError("Acesso ao arquivo foi negado pelo Android. Selecione o arquivo novamente.")
+                publishError(
+                    generation,
+                    "Acesso ao arquivo foi negado pelo Android. Selecione o arquivo novamente.",
+                )
             } catch (error: IOException) {
-                publishError(error.message ?: "Falha de entrada/saida ao analisar o arquivo.")
+                publishError(generation, error.message ?: "Falha de entrada/saida ao analisar o arquivo.")
             } catch (error: IllegalArgumentException) {
-                publishError(error.message ?: "O arquivo possui estrutura invalida ou nao suportada.")
+                publishError(generation, error.message ?: "O arquivo possui estrutura invalida ou nao suportada.")
             } catch (error: Exception) {
-                publishError("Falha inesperada ao analisar o arquivo: ${error.message ?: error.javaClass.simpleName}.")
+                publishError(
+                    generation,
+                    "Falha inesperada ao analisar o arquivo: ${error.message ?: error.javaClass.simpleName}.",
+                )
             }
         }
     }
@@ -89,27 +101,37 @@ internal class FirmwareLabViewModel : ViewModel() {
                 output.bufferedWriter(Charsets.UTF_8).use { writer ->
                     writer.write(report.toPlainText())
                 }
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = "Relatorio exportado com sucesso.",
-                )
+                publishExportMessage(report, "Relatorio exportado com sucesso.")
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: SecurityException) {
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = "O Android negou acesso ao destino do relatorio.",
-                )
+                publishExportMessage(report, "O Android negou acesso ao destino do relatorio.")
             } catch (error: IOException) {
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = error.message ?: "Falha ao exportar o relatorio.",
-                )
+                publishExportMessage(report, error.message ?: "Falha ao exportar o relatorio.")
             }
         }
     }
 
-    private fun publishError(message: String) {
-        mutableState.value = FirmwareLabScreenState(
+    private fun publishAnalysis(
+        generation: Long,
+        analysis: FirmwareLabAnalysisState,
+    ) {
+        if (analysisGeneration.get() != generation) return
+        mutableState.value = FirmwareLabScreenState(analysis = analysis)
+    }
+
+    private fun publishError(generation: Long, message: String) {
+        publishAnalysis(
+            generation = generation,
             analysis = FirmwareLabAnalysisState.Error(message),
         )
+    }
+
+    private fun publishExportMessage(report: FirmwareLabReport, message: String) {
+        val current = mutableState.value
+        val currentReport = (current.analysis as? FirmwareLabAnalysisState.Ready)?.report
+        if (currentReport != report) return
+        mutableState.value = current.copy(exportMessage = message)
     }
 
     private fun readDocumentMetadata(
@@ -138,13 +160,19 @@ internal class FirmwareLabViewModel : ViewModel() {
                 }
             }
         }
+        val safeDisplayName = displayName
+            ?.filter { character -> character >= ' ' && character != '\u007F' }
+            ?.take(MAXIMUM_DISPLAY_NAME_LENGTH)
+            ?.takeIf(String::isNotBlank)
+            ?: "firmware.bin"
         return DocumentMetadata(
-            displayName = displayName?.takeIf(String::isNotBlank) ?: "firmware.bin",
+            displayName = safeDisplayName,
             sizeBytes = sizeBytes,
         )
     }
 
     override fun onCleared() {
+        analysisGeneration.incrementAndGet()
         analysisJob?.cancel()
         exportJob?.cancel()
         super.onCleared()
@@ -154,4 +182,8 @@ internal class FirmwareLabViewModel : ViewModel() {
         val displayName: String,
         val sizeBytes: Long?,
     )
+
+    private companion object {
+        const val MAXIMUM_DISPLAY_NAME_LENGTH = 255
+    }
 }
