@@ -2,7 +2,7 @@ package org.rockservice.core.usb.rockchip
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -12,7 +12,7 @@ import org.rockservice.core.usb.UsbDeviceDescriptor
 class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
     @Test
     fun `close timeout does not block a completed probe`() = runTest {
-        val transport = SlowCloseTransport()
+        val transport = HangingCloseTransport()
         val client = AndroidRockchipReadOnlyMetadataClient(
             opener = RockchipReadOnlyTransportOpener { transport },
             transportMethod = RockchipUsbIoMethod.USB_REQUEST,
@@ -20,6 +20,10 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
 
         val report = client.probe(testDevice())
 
+        assertEquals(
+            listOf("TEST_UNIT_READY", "READ_CHIP_INFO", "READ_FLASH_ID", "READ_FLASH_INFO"),
+            report.entries.map(RockchipMetadataProbeEntry::name),
+        )
         assertTrue(report.entries.all(RockchipMetadataProbeEntry::succeeded))
         assertTrue(report.requiresReconnect)
         assertEquals(1, transport.closeCount)
@@ -34,7 +38,7 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
         hasPermission = true,
     )
 
-    private class SlowCloseTransport : RockchipReadOnlyTransport {
+    private class HangingCloseTransport : RockchipReadOnlyTransport {
         var closeCount = 0
 
         override suspend fun exchange(
@@ -51,7 +55,7 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
 
         override suspend fun close() {
             closeCount += 1
-            delay(3_000L)
+            awaitCancellation()
         }
 
         private fun successfulCsw(tag: Int): ByteArray =
