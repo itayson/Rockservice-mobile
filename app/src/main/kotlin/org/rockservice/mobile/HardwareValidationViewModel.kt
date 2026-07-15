@@ -35,6 +35,7 @@ internal sealed interface RockchipMetadataProbeState {
     data object Idle : RockchipMetadataProbeState
     data object Running : RockchipMetadataProbeState
     data class Ready(val report: RockchipMetadataProbeReport) : RockchipMetadataProbeState
+    data class Error(val message: String) : RockchipMetadataProbeState
 }
 
 internal data class HardwareValidationScreenState(
@@ -54,6 +55,7 @@ internal class HardwareValidationViewModel : ViewModel() {
     private var metadataProbeJob: Job? = null
     private var exportJob: Job? = null
     private var validationGeneration: Long = 0L
+    private var metadataProbeGeneration: Long = 0L
 
     val state = mutableState.asStateFlow()
 
@@ -75,6 +77,7 @@ internal class HardwareValidationViewModel : ViewModel() {
             timestampEpochMillis = System.currentTimeMillis(),
         )
         metadataProbeJob?.cancel()
+        metadataProbeGeneration += 1L
         mutableState.value = mutableState.value.copy(
             events = (mutableState.value.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
             metadataProbeState = RockchipMetadataProbeState.Idle,
@@ -88,6 +91,7 @@ internal class HardwareValidationViewModel : ViewModel() {
     ) {
         validationJob?.cancel()
         metadataProbeJob?.cancel()
+        metadataProbeGeneration += 1L
         val generation = ++validationGeneration
         val stateAtStart = mutableState.value
         mutableState.value = stateAtStart.copy(
@@ -157,12 +161,21 @@ internal class HardwareValidationViewModel : ViewModel() {
         if (!validation.report.descriptorCheck.succeeded) return
 
         metadataProbeJob?.cancel()
+        val generation = ++metadataProbeGeneration
         mutableState.value = mutableState.value.copy(metadataProbeState = RockchipMetadataProbeState.Running)
         metadataProbeJob = viewModelScope.launch(Dispatchers.IO) {
-            val report = client.probe(snapshot.descriptor)
-            mutableState.value = mutableState.value.copy(
-                metadataProbeState = RockchipMetadataProbeState.Ready(report),
-            )
+            val nextState = try {
+                RockchipMetadataProbeState.Ready(client.probe(snapshot.descriptor))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: RuntimeException) {
+                RockchipMetadataProbeState.Error(
+                    error.message?.take(MAXIMUM_PROBE_ERROR_LENGTH)?.ifBlank { null }
+                        ?: "Falha inesperada ${error.javaClass.simpleName} no probe de metadados.",
+                )
+            }
+            if (generation != metadataProbeGeneration) return@launch
+            mutableState.value = mutableState.value.copy(metadataProbeState = nextState)
         }
     }
 
@@ -191,6 +204,7 @@ internal class HardwareValidationViewModel : ViewModel() {
 
     override fun onCleared() {
         validationGeneration += 1L
+        metadataProbeGeneration += 1L
         validationJob?.cancel()
         metadataProbeJob?.cancel()
         exportJob?.cancel()
@@ -215,5 +229,6 @@ internal class HardwareValidationViewModel : ViewModel() {
         const val VALIDATION_TIMEOUT_MILLIS = 8_000L
         const val MAXIMUM_NOTE_LENGTH = 200
         const val MAXIMUM_RECORDED_EVENTS = 100
+        const val MAXIMUM_PROBE_ERROR_LENGTH = 240
     }
 }
