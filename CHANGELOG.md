@@ -8,6 +8,7 @@
 - Análise inicial de firmware com magic bytes, limites e SHA-256 em streaming.
 - Parser estrutural Android Sparse com validação defensiva de headers, chunks, limites e contabilidade de blocos sem expansão do payload.
 - Parser estrutural Android Boot Image v0-v4 com validação defensiva de headers, páginas, seções, offsets e truncamento sem extração de payload.
+- Parser raw de metadata Android `super`/liblp com validação de geometria primária/backup, SHA-256, tabelas, extents, grupos e block devices sem mapear partições.
 - Backend USB simulado com validação de alvo, timeout, cancelamento e lifecycle.
 - Backend Android USB Host real somente leitura para enumeração e descritores brutos.
 - Permissão USB controlada e revalidação do alvo antes da abertura.
@@ -29,3 +30,4 @@
 - Transporte físico Rockchip permanece sem implementação até validação em hardware autorizado.
 - Parser Android Sparse aplica limites explícitos e não expande payloads RAW durante a análise estrutural.
 - Parser Android Boot aplica limites explícitos e valida o layout por streaming sem reter kernel, ramdisk ou outras seções em memória.
+- Parser `super`/liblp valida SHA-256 e referências internas antes de aceitar a metadata e não lê o conteúdo físico apontado pelos extents.
