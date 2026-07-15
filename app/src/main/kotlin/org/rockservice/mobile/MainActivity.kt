@@ -18,46 +18,66 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.rockservice.core.usb.AndroidUsbAttachmentMonitor
 import org.rockservice.core.usb.AndroidUsbHostBackend
+import org.rockservice.core.usb.UsbTargetSelectionPolicy
 import org.rockservice.feature.devicedetection.CapabilityDetector
 
 class MainActivity : ComponentActivity() {
     private lateinit var usbBackend: AndroidUsbHostBackend
+    private lateinit var usbAttachmentMonitor: AndroidUsbAttachmentMonitor
+    private val usbAttachmentEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usbBackend = AndroidUsbHostBackend(applicationContext)
+        usbAttachmentMonitor = AndroidUsbAttachmentMonitor(applicationContext) {
+            // The broadcast is only a hint. The UI always performs a fresh enumeration.
+            usbAttachmentEvents.tryEmit(Unit)
+        }
+        usbAttachmentMonitor.start()
 
         setContent {
             MaterialTheme {
                 val capabilities = remember { CapabilityDetector(this).detect() }
                 val scope = rememberCoroutineScope()
                 val refreshMutex = remember { Mutex() }
-                var usbState by remember {
+                val usbState = remember {
                     mutableStateOf<UsbDiagnosticsUiState>(UsbDiagnosticsUiState.Loading)
                 }
+                val selectedTransportId = remember { mutableStateOf<String?>(null) }
 
                 suspend fun refreshUsbDiagnostics() {
                     refreshMutex.withLock {
-                        usbState = UsbDiagnosticsUiState.Loading
-                        usbState = scanUsbDiagnostics(usbBackend)
+                        usbState.value = UsbDiagnosticsUiState.Loading
+                        val refreshed = scanUsbDiagnostics(usbBackend)
+                        if (refreshed is UsbDiagnosticsUiState.Ready) {
+                            selectedTransportId.value = UsbTargetSelectionPolicy.reconcile(
+                                selectedTransportId = selectedTransportId.value,
+                                devices = refreshed.devices.map { device -> device.descriptor },
+                            )
+                        }
+                        usbState.value = refreshed
                     }
                 }
 
                 LaunchedEffect(Unit) {
                     refreshUsbDiagnostics()
+                    usbAttachmentEvents.collect {
+                        refreshUsbDiagnostics()
+                    }
                 }
 
                 Scaffold(
@@ -108,8 +128,11 @@ class MainActivity : ComponentActivity() {
                                     style = MaterialTheme.typography.titleLarge,
                                 )
                                 Text(
-                                    "A varredura abaixo enumera metadados, interfaces e endpoints. Ela não envia comandos ao dispositivo.",
+                                    "Eventos de conexão apenas disparam uma nova enumeração. Nenhum broadcast é tratado como autorização de alvo.",
                                 )
+                                selectedTransportId.value?.let { transportId ->
+                                    Text("Alvo selecionado: $transportId")
+                                }
                                 Button(
                                     onClick = {
                                         scope.launch { refreshUsbDiagnostics() }
@@ -120,7 +143,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        when (val state = usbState) {
+                        when (val state = usbState.value) {
                             UsbDiagnosticsUiState.Loading -> {
                                 item { CircularProgressIndicator() }
                             }
@@ -141,13 +164,28 @@ class MainActivity : ComponentActivity() {
                                     item { Text("Nenhum dispositivo USB detectado.") }
                                 } else {
                                     items(state.devices, key = { it.transportId }) { device ->
+                                        val isSelected = selectedTransportId.value == device.transportId
                                         Card {
-                                            Column(Modifier.padding(16.dp)) {
+                                            Column(
+                                                modifier = Modifier.padding(16.dp),
+                                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                            ) {
                                                 Text(device.title, style = MaterialTheme.typography.titleMedium)
                                                 Text(device.vendorProduct)
                                                 Text(device.permissionLabel)
                                                 Text(device.topologyLabel)
                                                 Text(device.rockchipProbeLabel)
+                                                Button(
+                                                    onClick = {
+                                                        selectedTransportId.value = UsbTargetSelectionPolicy.select(
+                                                            candidate = device.descriptor,
+                                                            devices = state.devices.map { item -> item.descriptor },
+                                                        )
+                                                    },
+                                                    enabled = !isSelected,
+                                                ) {
+                                                    Text(if (isSelected) "Alvo selecionado" else "Selecionar alvo")
+                                                }
                                             }
                                         }
                                     }
@@ -161,6 +199,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (::usbAttachmentMonitor.isInitialized) {
+            usbAttachmentMonitor.close()
+        }
         if (::usbBackend.isInitialized) {
             lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
                 usbBackend.close()

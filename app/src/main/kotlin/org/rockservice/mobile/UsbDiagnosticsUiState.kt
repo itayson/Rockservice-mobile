@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import org.rockservice.core.usb.AndroidUsbHostBackend
 import org.rockservice.core.usb.RockchipPassiveProbe
 import org.rockservice.core.usb.RockchipPassiveProbeLevel
+import org.rockservice.core.usb.UsbDeviceDescriptor
 
 internal sealed interface UsbDiagnosticsUiState {
     data object Loading : UsbDiagnosticsUiState
@@ -18,6 +19,7 @@ internal sealed interface UsbDiagnosticsUiState {
 }
 
 internal data class UsbDeviceUiModel(
+    val descriptor: UsbDeviceDescriptor,
     val transportId: String,
     val title: String,
     val vendorProduct: String,
@@ -34,6 +36,7 @@ internal suspend fun scanUsbDiagnostics(
             val topology = backend.inspectTopology(device)
             val probe = RockchipPassiveProbe.probe(device, topology)
             UsbDeviceUiModel(
+                descriptor = device,
                 transportId = requireNotNull(device.transportId),
                 title = device.product ?: device.manufacturer ?: "Dispositivo USB",
                 vendorProduct = "VID:PID ${device.vendorId.hex4()}:${device.productId.hex4()}",
