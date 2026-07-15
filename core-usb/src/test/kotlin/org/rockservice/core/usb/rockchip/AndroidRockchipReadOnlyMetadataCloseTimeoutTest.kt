@@ -2,7 +2,8 @@ package org.rockservice.core.usb.rockchip
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import kotlinx.coroutines.awaitCancellation
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -11,11 +12,12 @@ import org.rockservice.core.usb.UsbDeviceDescriptor
 
 class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
     @Test
-    fun `close timeout does not block a completed probe`() = runTest {
-        val transport = HangingCloseTransport()
+    fun `blocking close is isolated and cannot block a completed probe`() = runTest {
+        val transport = BlockingCloseTransport()
         val client = AndroidRockchipReadOnlyMetadataClient(
             opener = RockchipReadOnlyTransportOpener { transport },
             transportMethod = RockchipUsbIoMethod.USB_REQUEST,
+            closeTimeoutMillis = 100L,
         )
 
         val report = client.probe(testDevice())
@@ -27,6 +29,7 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
         assertTrue(report.entries.all(RockchipMetadataProbeEntry::succeeded))
         assertTrue(report.requiresReconnect)
         assertEquals(1, transport.closeCount)
+        assertTrue(transport.closeInterrupted.await(1, TimeUnit.SECONDS))
     }
 
     private fun testDevice(): UsbDeviceDescriptor = UsbDeviceDescriptor(
@@ -38,8 +41,10 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
         hasPermission = true,
     )
 
-    private class HangingCloseTransport : RockchipReadOnlyTransport {
+    private class BlockingCloseTransport : RockchipReadOnlyTransport {
         var closeCount = 0
+        val closeInterrupted = CountDownLatch(1)
+        private val neverReleased = CountDownLatch(1)
 
         override suspend fun exchange(
             command: ByteArray,
@@ -55,7 +60,12 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
 
         override suspend fun close() {
             closeCount += 1
-            awaitCancellation()
+            try {
+                neverReleased.await()
+            } catch (interrupted: InterruptedException) {
+                closeInterrupted.countDown()
+                throw interrupted
+            }
         }
 
         private fun successfulCsw(tag: Int): ByteArray =
