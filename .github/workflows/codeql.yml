@@ -16,6 +16,8 @@ permissions:
 
 jobs:
   analyze:
+    # security-events: write is required so CodeQL can upload SARIF analysis
+    # results to the repository Security dashboard.
     permissions:
       contents: read
       security-events: write
