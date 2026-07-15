@@ -1,11 +1,10 @@
 package org.rockservice.core.usb.rockchip
 
 import android.content.Context
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.FutureTask
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlinx.coroutines.CancellationException
@@ -98,38 +97,50 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
                 return@withContext false
             }
 
-            val task = FutureTask {
-                try {
-                    runBlocking { session.close() }
-                } finally {
-                    CLOSE_WORKER_BUSY.set(false)
-                }
-            }
-            Thread(task, "RockchipMetadataClose").apply {
-                isDaemon = true
-                start()
-            }
+            val completed = CountDownLatch(1)
+            val failure = AtomicReference<Throwable?>(null)
+            val worker = Thread(
+                {
+                    try {
+                        runBlocking { session.close() }
+                    } catch (error: Throwable) {
+                        failure.set(error)
+                    } finally {
+                        CLOSE_WORKER_BUSY.set(false)
+                        completed.countDown()
+                    }
+                },
+                "RockchipMetadataClose",
+            ).apply { isDaemon = true }
 
             try {
-                task.get(closeTimeoutMillis, TimeUnit.MILLISECONDS)
-                true
-            } catch (error: TimeoutException) {
-                task.cancel(true)
-                LOGGER.log(
-                    Level.WARNING,
-                    "Timeout de $closeTimeoutMillis ms ao fechar a sessão Rockchip; reconexão necessária.",
-                    error,
-                )
-                false
+                worker.start()
+            } catch (error: RuntimeException) {
+                CLOSE_WORKER_BUSY.set(false)
+                LOGGER.log(Level.WARNING, "Não foi possível iniciar o fechamento Rockchip; reconexão necessária.", error)
+                return@withContext false
+            }
+
+            val finished = try {
+                completed.await(closeTimeoutMillis, TimeUnit.MILLISECONDS)
             } catch (error: InterruptedException) {
-                task.cancel(true)
+                worker.interrupt()
                 Thread.currentThread().interrupt()
                 LOGGER.log(Level.WARNING, "Espera pelo fechamento Rockchip foi interrompida; reconexão necessária.", error)
-                false
-            } catch (error: ExecutionException) {
-                LOGGER.log(Level.WARNING, "Falha ao fechar a sessão Rockchip; reconexão necessária.", error.cause ?: error)
-                false
+                return@withContext false
             }
+
+            if (!finished) {
+                worker.interrupt()
+                LOGGER.warning("Timeout de $closeTimeoutMillis ms ao fechar a sessão Rockchip; reconexão necessária.")
+                return@withContext false
+            }
+
+            failure.get()?.let { error ->
+                LOGGER.log(Level.WARNING, "Falha ao fechar a sessão Rockchip; reconexão necessária.", error)
+                return@withContext false
+            }
+            true
         }
 
     private suspend fun query(
