@@ -9,8 +9,10 @@ Aplicativo Android open source para diagnóstico, análise de firmware e manuten
 Implementado e coberto por testes/CI:
 
 - aplicativo Android com Jetpack Compose;
+- Laboratório de Firmware como tela inicial, com seleção de documento, análise em background, prévia e exportação de relatório técnico;
+- acesso explícito à tela de diagnóstico de dispositivos já existente;
 - detecção de capacidades do dispositivo host;
-- identificação inicial de formatos de firmware por magic bytes;
+- identificação de formatos de firmware por magic bytes, incluindo Android Sparse, Android Boot Image e Android Super raw;
 - SHA-256 em streaming e limites para análise de arquivos;
 - parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos, sem expansão de payload;
 - parser estrutural Android Boot Image v0-v4 com validação de páginas, seções, offsets e truncamento, sem extração de payload;
@@ -42,7 +44,9 @@ Ainda **não** estão implementados ou habilitados:
 - expansão ou extração de imagens Android Sparse;
 - extração ou modificação de payloads de Android Boot Images;
 - expansão automática de `super.img` sparse para análise liblp;
+- seleção de slots liblp além do slot 0 pela interface;
 - mapeamento ou extração de partições lógicas a partir de extents `super`;
+- parser estrutural especializado para ZIP, ELF ou ISO 9660;
 - transporte Rockchip real por `bulkTransfer()`;
 - identificação ativa de Loader ou Maskrom;
 - leitura de NAND, SPI NAND, eMMC ou partições via protocolo Rockchip;
@@ -55,6 +59,8 @@ Ainda **não** estão implementados ou habilitados:
 A validação física do USB Host está rastreada em `#18`. O transporte Rockchip real somente leitura está bloqueado por essa validação em `#19`. A cadeia de release assinada/SBOM está rastreada em `#20`.
 
 ## Modelo de segurança
+
+O Laboratório de Firmware abre apenas documentos selecionados pelo usuário, não inclui o URI original no relatório e não solicita acesso amplo ao armazenamento para esse fluxo.
 
 Broadcasts USB servem apenas como sinal para uma nova enumeração. Nenhum dispositivo é autorizado diretamente por dados recebidos de broadcast.
 
@@ -78,6 +84,7 @@ Consulte:
 
 - `docs/FEASIBILITY.md`;
 - `docs/ARCHITECTURE.md`;
+- `docs/FIRMWARE_LAB.md`;
 - `docs/ANDROID_USB_HOST.md`;
 - `docs/ROCKCHIP_PASSIVE_PROBE.md`;
 - `docs/USB_DIAGNOSTICS_DASHBOARD.md`;
