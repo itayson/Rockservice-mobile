@@ -6,14 +6,14 @@ Aplicativo Android open source para diagnóstico, análise de firmware e manuten
 
 `0.1.0-alpha01` continua sendo uma versão de desenvolvimento, mas a fundação já ultrapassou o bootstrap exclusivamente simulado.
 
-Implementado e validado em CI:
+Implementado e coberto por testes/CI:
 
 - aplicativo Android com Jetpack Compose;
 - detecção de capacidades do dispositivo host;
 - identificação inicial de formatos de firmware por magic bytes;
 - SHA-256 em streaming e limites para análise de arquivos;
 - backend USB simulado com validações de alvo, limites, timeout e lifecycle;
-- backend Android USB Host real em modo somente leitura para enumeração e descritores USB;
+- backend Android USB Host em modo somente leitura para enumeração e descritores USB;
 - solicitação controlada de permissão USB e revalidação do alvo;
 - inspeção passiva de interfaces e endpoints;
 - identificação conservadora do vendor ID Rockchip `0x2207`;
@@ -27,6 +27,10 @@ Implementado e validado em CI:
 - CI, CodeQL, Gitleaks e gates de supply chain;
 - política de confirmação para operações destrutivas futuras;
 - módulos NDK isolados para evolução posterior.
+
+### Validação física
+
+O backend Android USB Host e as camadas passivas acima estão implementados e cobertos por testes automatizados, mas **o suporte em hardware Rockchip físico ainda não foi comprovado como matriz de compatibilidade**. Essa validação está rastreada em `#18` e é pré-requisito para conectar o transporte Rockchip real ao dispositivo.
 
 ## Limites atuais
 
