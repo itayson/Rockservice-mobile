@@ -50,6 +50,9 @@ jobs:
       - uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           languages: "${{ matrix.language }}"
+          debug: true
+          debug-artifact-name: "codeql-debug-${{ matrix.language }}"
+          debug-database-name: "${{ matrix.language }}"
 
       - name: Build Android and native modules
         run: |
