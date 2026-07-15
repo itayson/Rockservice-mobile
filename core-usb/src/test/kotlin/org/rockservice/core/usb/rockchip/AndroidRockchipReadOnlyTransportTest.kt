@@ -101,6 +101,24 @@ class AndroidRockchipReadOnlyTransportTest {
         assertEquals(1, io.closeCount)
     }
 
+    @Test
+    fun `exchange fails after transport is closed`() = runTest {
+        val io = FakeRockchipUsbIo()
+        val transport = AndroidRockchipReadOnlyTransport(io)
+        transport.close()
+
+        val error = runCatching {
+            transport.exchange(
+                ByteArray(RockchipReadOnlyProtocolCodec.COMMAND_BLOCK_WRAPPER_SIZE),
+                0..0,
+                1_000,
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        assertEquals("Rockchip read-only transport is closed.", error?.message)
+    }
+
     private class FakeRockchipUsbIo(
         private val writeResult: Int = RockchipReadOnlyProtocolCodec.COMMAND_BLOCK_WRAPPER_SIZE,
         private val reads: ArrayDeque<ByteArray> = ArrayDeque(),
