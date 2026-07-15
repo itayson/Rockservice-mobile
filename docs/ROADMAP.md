@@ -105,7 +105,13 @@ A escrita só poderá ser introduzida após todos os seguintes gates:
 
 **Estado: bloqueada até a maturidade das fases 4 e 5.**
 
-Loader/Maskrom, quando tecnicamente e legalmente viáveis, devem usar loaders fornecidos ou autorizados pelo usuário e uma matriz explícita de compatibilidade.
+Loader/Maskrom, se forem técnica e legalmente viáveis, devem usar apenas loaders fornecidos ou autorizados pelo usuário. Antes de qualquer envio ao hardware, o artefato deve ter:
+
+- hash ou assinatura verificados contra uma origem confiável;
+- proveniência registrada;
+- matriz explícita de compatibilidade entre loader, SoC, placa e modo de recuperação;
+- validação prévia do artefato e do alvo selecionado;
+- evidência de teste em hardware autorizado para a combinação suportada.
 
 ## Fase 7 — Plugins e programadores externos
 
