@@ -3,10 +3,14 @@ description: Propor funcionalidade
 body:
   - type: textarea
     id: need
-    attributes: { label: Necessidade }
-    validations: { required: true }
+    attributes:
+      label: Necessidade
+    validations:
+      required: true
   - type: dropdown
     id: risk
     attributes:
       label: Risco
       options: [Informativo, Baixo, Moderado, Alto, Crítico]
+    validations:
+      required: true

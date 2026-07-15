@@ -8,5 +8,8 @@ data class FeatureFlags(
         require(!experimentalUsbWrite) {
             "Real USB write must remain disabled in the bootstrap release."
         }
+        require(!rootIntegration) {
+            "Root integration must remain disabled in the bootstrap release."
+        }
     }
 }

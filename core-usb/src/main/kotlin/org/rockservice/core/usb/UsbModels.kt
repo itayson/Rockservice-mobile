@@ -6,7 +6,12 @@ data class UsbDeviceDescriptor(
     val manufacturer: String?,
     val product: String?,
     val serialNumber: String? = null,
-)
+) {
+    init {
+        require(vendorId in 0x0000..0xFFFF) { "vendorId must be in 0x0000..0xFFFF." }
+        require(productId in 0x0000..0xFFFF) { "productId must be in 0x0000..0xFFFF." }
+    }
+}
 
 enum class UsbBackendKind { SIMULATED, ANDROID_HOST }
 

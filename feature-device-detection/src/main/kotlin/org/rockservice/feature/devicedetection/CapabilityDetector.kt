@@ -11,7 +11,7 @@ class CapabilityDetector(private val context: Context) {
     fun detect(): List<Capability> {
         val pm = context.packageManager
         val usbHost = pm.hasSystemFeature(PackageManager.FEATURE_USB_HOST)
-        val abi64 = Build.SUPPORTED_64_BIT_ABIS.isNotEmpty()
+        val arm64 = Build.SUPPORTED_ABIS.contains("arm64-v8a")
 
         return listOf(
             Capability(
@@ -33,8 +33,8 @@ class CapabilityDetector(private val context: Context) {
             Capability(
                 id = "native_arm64",
                 title = "Ferramentas nativas arm64-v8a",
-                availability = if (abi64) Availability.AVAILABLE else Availability.UNAVAILABLE,
-                reason = "ABIs 64-bit declaradas: ${Build.SUPPORTED_64_BIT_ABIS.joinToString()}.",
+                availability = if (arm64) Availability.AVAILABLE else Availability.UNAVAILABLE,
+                reason = "ABIs declaradas: ${Build.SUPPORTED_ABIS.joinToString()}.",
             ),
             Capability(
                 id = "rockchip_write",

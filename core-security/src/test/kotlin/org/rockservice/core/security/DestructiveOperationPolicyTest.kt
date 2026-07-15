@@ -27,4 +27,25 @@ class DestructiveOperationPolicyTest {
         )
         assertTrue(result is PolicyDecision.Allowed)
     }
+
+    @Test
+    fun `high risk operation is denied without exact confirmation`() {
+        val result = policy.evaluate(
+            OperationRequest("erase", "RK3566 board", RiskLevel.HIGH, null)
+        )
+        assertTrue(result is PolicyDecision.Denied)
+    }
+
+    @Test
+    fun `high risk operation is denied for blank target`() {
+        val result = policy.evaluate(
+            OperationRequest(
+                "erase",
+                " ",
+                RiskLevel.HIGH,
+                DestructiveOperationPolicy.REQUIRED_CONFIRMATION,
+            )
+        )
+        assertTrue(result is PolicyDecision.Denied)
+    }
 }

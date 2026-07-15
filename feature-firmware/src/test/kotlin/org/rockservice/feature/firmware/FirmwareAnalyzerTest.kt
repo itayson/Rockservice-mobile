@@ -1,12 +1,13 @@
 package org.rockservice.feature.firmware
 
 import java.io.ByteArrayInputStream
+import java.io.InputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FirmwareAnalyzerTest {
-    private val analyzer = FirmwareAnalyzer(maximumBytes = 1024)
+    private val analyzer = FirmwareAnalyzer(maximumBytes = 1024 * 1024)
 
     @Test
     fun `identifies zip by magic bytes and calculates sha256`() {
@@ -15,6 +16,26 @@ class FirmwareAnalyzerTest {
         assertEquals(FirmwareFormat.ZIP, result.format)
         assertEquals(bytes.size.toLong(), result.bytesRead)
         assertEquals(64, result.sha256.length)
+    }
+
+    @Test
+    fun `identifies android sparse image`() {
+        val bytes = byteArrayOf(0x3A, 0xFF.toByte(), 0x26, 0xED.toByte())
+        assertEquals(FirmwareFormat.ANDROID_SPARSE, analyzer.analyze(ByteArrayInputStream(bytes)).format)
+    }
+
+    @Test
+    fun `identifies elf image`() {
+        val bytes = byteArrayOf(0x7F, 0x45, 0x4C, 0x46)
+        assertEquals(FirmwareFormat.ELF, analyzer.analyze(ByteArrayInputStream(bytes)).format)
+    }
+
+    @Test
+    fun `identifies iso image from partial reads`() {
+        val bytes = ByteArray(0x8006)
+        "CD001".toByteArray(Charsets.US_ASCII).copyInto(bytes, destinationOffset = 0x8001)
+        val result = analyzer.analyze(PartialInputStream(bytes, 7))
+        assertEquals(FirmwareFormat.ISO_9660, result.format)
     }
 
     @Test(expected = IllegalArgumentException::class)
@@ -27,5 +48,24 @@ class FirmwareAnalyzerTest {
         val result = analyzer.analyze(ByteArrayInputStream(byteArrayOf(0x50)))
         assertEquals(FirmwareFormat.UNKNOWN, result.format)
         assertTrue(result.warnings.isNotEmpty())
+    }
+
+    private class PartialInputStream(
+        private val bytes: ByteArray,
+        private val maximumChunk: Int,
+    ) : InputStream() {
+        private var position = 0
+
+        override fun read(): Int = if (position >= bytes.size) -1 else bytes[position++].toInt() and 0xff
+
+        override fun read(target: ByteArray, offset: Int, length: Int): Int {
+            if (position >= bytes.size) return -1
+            val count = minOf(length, maximumChunk, bytes.size - position)
+            bytes.copyInto(target, offset, position, position + count)
+            position += count
+            return count
+        }
+
+        override fun available(): Int = 0
     }
 }

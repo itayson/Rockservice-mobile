@@ -26,7 +26,13 @@ class FirmwareAnalyzer(
         val input = BufferedInputStream(source)
         input.mark(0x9000)
         val header = ByteArray(0x9000)
-        val headerLength = input.read(header).coerceAtLeast(0)
+        var headerLength = 0
+        while (headerLength < header.size) {
+            val read = input.read(header, headerLength, header.size - headerLength)
+            if (read < 0) break
+            if (read == 0) continue
+            headerLength += read
+        }
         input.reset()
 
         val format = identify(header, headerLength)
