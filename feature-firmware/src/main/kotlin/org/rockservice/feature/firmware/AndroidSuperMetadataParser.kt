@@ -93,9 +93,9 @@ data class AndroidSuperMetadata(
  * logical partition contents.
  *
  * The parser validates both geometry copies when available, SHA-256 checksums, metadata version,
- * table bounds and contiguity, entry sizes, partition references, extent target ranges and group
- * size limits. Sparse super images must be converted or streamed through a separate sparse decoder;
- * this parser intentionally expects the raw super layout.
+ * table bounds and overlap, entry sizes, partition references, extent target ranges and group size
+ * limits. Sparse super images must be converted or streamed through a separate sparse decoder; this
+ * parser intentionally expects the raw super layout.
  */
 class AndroidSuperMetadataParser(
     private val maximumInputBytes: Long = DEFAULT_MAXIMUM_INPUT_BYTES,
@@ -217,7 +217,7 @@ class AndroidSuperMetadataParser(
                 "Tabela $name declara ${descriptor.entryCount} entradas; limite: $maximumTableEntries."
             }
         }
-        validateContiguousTables(descriptors, tablesSize)
+        validateNonOverlappingTables(descriptors)
 
         val tables = input.readExactly(tablesSize, "tabelas liblp")
         val expectedTablesChecksum = header.copyOfRange(
@@ -296,11 +296,15 @@ class AndroidSuperMetadataParser(
         primaryBlock: ByteArray,
         backupBlock: ByteArray,
     ): AndroidSuperGeometry {
-        val primary = runCatching {
-            parseGeometry(primaryBlock, AndroidSuperGeometrySource.PRIMARY)
+        val primary = try {
+            Result.success(parseGeometry(primaryBlock, AndroidSuperGeometrySource.PRIMARY))
+        } catch (error: IllegalArgumentException) {
+            Result.failure(error)
         }
-        val backup = runCatching {
-            parseGeometry(backupBlock, AndroidSuperGeometrySource.BACKUP)
+        val backup = try {
+            Result.success(parseGeometry(backupBlock, AndroidSuperGeometrySource.BACKUP))
+        } catch (error: IllegalArgumentException) {
+            Result.failure(error)
         }
 
         if (primary.isSuccess && backup.isSuccess) {
@@ -585,9 +589,8 @@ class AndroidSuperMetadataParser(
         }
     }
 
-    private fun validateContiguousTables(
+    private fun validateNonOverlappingTables(
         descriptors: List<Pair<String, AndroidSuperTableDescriptor>>,
-        tablesSize: Int,
     ) {
         val ranges = descriptors.map { (name, descriptor) ->
             val size = checkedMultiply(
@@ -596,17 +599,15 @@ class AndroidSuperMetadataParser(
                 "Tamanho da tabela $name",
             )
             Triple(name, descriptor.offsetBytes, size)
-        }.sortedWith(compareBy<Triple<String, Long, Long>> { it.second }.thenBy { it.third })
+        }.filter { (_, _, size) -> size > 0L }
+            .sortedBy { (_, offset, _) -> offset }
 
-        var cursor = 0L
+        var previousEnd = 0L
         ranges.forEach { (name, offset, size) ->
-            require(offset == cursor) {
-                "Tabelas liblp não são contíguas em $name: offset $offset, esperado $cursor."
+            require(offset >= previousEnd) {
+                "Tabela $name sobrepõe uma tabela liblp anterior."
             }
-            cursor = checkedAdd(cursor, size, "Cobertura das tabelas liblp")
-        }
-        require(cursor == tablesSize.toLong()) {
-            "Descritores liblp cobrem $cursor bytes; tables_size declara $tablesSize."
+            previousEnd = checkedAdd(offset, size, "Fim da tabela $name")
         }
     }
 
