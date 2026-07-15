@@ -35,7 +35,7 @@ jobs:
       - name: Verify Gradle wrapper
         run: |
           test -s gradle/wrapper/gradle-wrapper.jar
-          echo "9bbc975c742b298b441bfb90dbc124400a3751b9  gradle/wrapper/gradle-wrapper.jar" | sha1sum --check
+          echo "81a82aaea5abcc8ff68b3dfcb58b3c3c429378efd98e7433460610fecd7ae45f  gradle/wrapper/gradle-wrapper.jar" | sha256sum --check
           chmod +x gradlew
           ./gradlew --version
 
