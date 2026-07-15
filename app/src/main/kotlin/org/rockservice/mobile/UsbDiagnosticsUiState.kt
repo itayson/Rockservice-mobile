@@ -1,5 +1,6 @@
 package org.rockservice.mobile
 
+import kotlinx.coroutines.CancellationException
 import org.rockservice.core.usb.AndroidUsbHostBackend
 import org.rockservice.core.usb.RockchipPassiveProbe
 import org.rockservice.core.usb.RockchipPassiveProbeLevel
@@ -51,6 +52,8 @@ internal suspend fun scanUsbDiagnostics(
             )
         }
         UsbDiagnosticsUiState.Ready(devices)
+    } catch (cancellation: CancellationException) {
+        throw cancellation
     } catch (error: Exception) {
         UsbDiagnosticsUiState.Error(
             message = error.message ?: "Falha ao enumerar dispositivos USB.",
