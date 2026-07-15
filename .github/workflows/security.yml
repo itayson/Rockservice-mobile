@@ -25,11 +25,11 @@ jobs:
           persist-credentials: false
 
       - name: Scan repository with Gitleaks
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/repo" \
-            ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            detect --source=/repo --no-banner --redact --exit-code=1
+        uses: gitleaks/gitleaks-action@961680e5305a30eb575f3ddf6bb6b2e265b68f0a
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
   dependency-review:
     if: github.event_name == 'pull_request'
@@ -43,11 +43,4 @@ jobs:
           persist-credentials: false
 
       - name: Review dependency changes
-        id: dependency-review
-        continue-on-error: true
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
-
-      - name: Record bootstrap limitation
-        if: steps.dependency-review.outcome == 'failure'
-        run: |
-          echo "::warning::Dependency Review could not compare this first bootstrap PR. Enforce this check after the default branch has a dependency snapshot."
