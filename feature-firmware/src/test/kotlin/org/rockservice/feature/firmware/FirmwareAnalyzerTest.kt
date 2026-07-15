@@ -25,6 +25,19 @@ class FirmwareAnalyzerTest {
     }
 
     @Test
+    fun `identifies android boot image`() {
+        val bytes = "ANDROID!".toByteArray(Charsets.US_ASCII)
+        assertEquals(FirmwareFormat.ANDROID_BOOT_IMAGE, analyzer.analyze(ByteArrayInputStream(bytes)).format)
+    }
+
+    @Test
+    fun `identifies raw android super by backup geometry magic`() {
+        val bytes = ByteArray(8196)
+        byteArrayOf(0x67, 0x44, 0x6C, 0x61).copyInto(bytes, destinationOffset = 8192)
+        assertEquals(FirmwareFormat.ANDROID_SUPER_RAW, analyzer.analyze(ByteArrayInputStream(bytes)).format)
+    }
+
+    @Test
     fun `identifies elf image`() {
         val bytes = byteArrayOf(0x7F, 0x45, 0x4C, 0x46)
         assertEquals(FirmwareFormat.ELF, analyzer.analyze(ByteArrayInputStream(bytes)).format)
