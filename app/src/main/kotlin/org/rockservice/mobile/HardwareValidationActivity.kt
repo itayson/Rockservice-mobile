@@ -37,14 +37,16 @@ import org.rockservice.core.usb.AndroidUsbHostBackend
 import org.rockservice.core.usb.UsbDiagnosticsScanner
 import org.rockservice.core.usb.UsbDiagnosticsState
 import org.rockservice.core.usb.UsbHardwareValidationHostInfo
+import org.rockservice.core.usb.rockchip.AndroidRockchipReadOnlyMetadataClient
 
-/** Guided passive USB validation used to gather reproducible evidence for hardware gate #18. */
+/** Guided USB validation and explicitly gated read-only Rockchip metadata probe. */
 class HardwareValidationActivity : ComponentActivity() {
     private lateinit var usbBackend: AndroidUsbHostBackend
     private lateinit var usbAttachmentMonitor: AndroidUsbAttachmentMonitor
     private lateinit var usbScanner: UsbDiagnosticsScanner
     private lateinit var usbViewModel: UsbDiagnosticsViewModel
     private lateinit var validationViewModel: HardwareValidationViewModel
+    private lateinit var metadataClient: AndroidRockchipReadOnlyMetadataClient
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,6 +54,7 @@ class HardwareValidationActivity : ComponentActivity() {
         usbViewModel = ViewModelProvider(this)[UsbDiagnosticsViewModel::class.java]
         validationViewModel = ViewModelProvider(this)[HardwareValidationViewModel::class.java]
         usbBackend = AndroidUsbHostBackend(applicationContext)
+        metadataClient = AndroidRockchipReadOnlyMetadataClient(applicationContext)
         usbScanner = AndroidUsbDiagnosticsScanner(usbBackend)
         usbAttachmentMonitor = AndroidUsbAttachmentMonitor(applicationContext) { event ->
             validationViewModel.recordAttachmentEvent(event.kind)
@@ -104,7 +107,7 @@ class HardwareValidationActivity : ComponentActivity() {
                                 ) {
                                     Text("Teste passivo e seguro", style = MaterialTheme.typography.titleMedium)
                                     Text(
-                                        "Este modo enumera o USB, registra a topologia e faz apenas uma leitura limitada dos descritores expostos pelo Android. Nao reivindica interfaces e nao envia comandos Rockchip.",
+                                        "Primeiro valida USB e descritores sem reivindicar interfaces. Somente apos sucesso, o teste experimental pode executar consultas Rockchip de metadados allowlisted, sem escrita, erase, reset ou loader.",
                                     )
                                 }
                             }
@@ -140,7 +143,7 @@ class HardwareValidationActivity : ComponentActivity() {
                         item {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("Dispositivos USB", style = MaterialTheme.typography.titleLarge)
-                                Text("Conecte o equipamento por OTG e toque em atualizar. Depois selecione apenas o alvo que voce autorizou testar.")
+                                Text("Conecte o equipamento por OTG, atualize e selecione apenas o alvo autorizado.")
                                 Button(onClick = { usbViewModel.refresh(usbScanner) }) {
                                     Text("Atualizar dispositivos USB")
                                 }
@@ -229,9 +232,9 @@ class HardwareValidationActivity : ComponentActivity() {
                                 Card(modifier = Modifier.fillMaxWidth()) {
                                     Column(
                                         modifier = Modifier.padding(16.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
                                     ) {
-                                        Text("Resultado", style = MaterialTheme.typography.titleMedium)
+                                        Text("Resultado da validacao", style = MaterialTheme.typography.titleMedium)
                                         Text(
                                             if (report.descriptorCheck.succeeded) {
                                                 "Validacao segura concluida com sucesso."
@@ -249,7 +252,50 @@ class HardwareValidationActivity : ComponentActivity() {
                                         ) {
                                             Text("Exportar relatorio para enviar")
                                         }
+                                        if (report.descriptorCheck.succeeded) {
+                                            Button(
+                                                onClick = {
+                                                    selectedSnapshot?.let { snapshot ->
+                                                        validationViewModel.runMetadataProbe(snapshot, metadataClient)
+                                                    }
+                                                },
+                                                enabled = selectedSnapshot != null &&
+                                                    validationState.metadataProbeState !is RockchipMetadataProbeState.Running,
+                                                modifier = Modifier.fillMaxWidth(),
+                                            ) {
+                                                Text("Testar metadados Rockchip somente leitura")
+                                            }
+                                        }
                                         validationState.exportMessage?.let { message -> Text(message) }
+                                    }
+                                }
+                            }
+                        }
+
+                        when (val probeState = validationState.metadataProbeState) {
+                            RockchipMetadataProbeState.Idle -> Unit
+                            RockchipMetadataProbeState.Running -> item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        CircularProgressIndicator()
+                                        Text("Executando consultas de metadados em sessoes USB isoladas...")
+                                    }
+                                }
+                            }
+                            is RockchipMetadataProbeState.Ready -> item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Text("Metadados Rockchip experimentais", style = MaterialTheme.typography.titleMedium)
+                                        Text("Nenhum comando de escrita, erase, reset ou loader foi enviado.")
+                                        probeState.report.entries.forEach { entry ->
+                                            Text("${if (entry.succeeded) "OK" else "FALHA"} - ${entry.name}: ${entry.value}")
+                                        }
                                     }
                                 }
                             }
@@ -264,9 +310,7 @@ class HardwareValidationActivity : ComponentActivity() {
         if (::usbViewModel.isInitialized) usbViewModel.cancelRefresh()
         if (::usbAttachmentMonitor.isInitialized) usbAttachmentMonitor.close()
         if (::usbBackend.isInitialized) {
-            lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) {
-                usbBackend.close()
-            }
+            lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) { usbBackend.close() }
         }
         super.onDestroy()
     }
