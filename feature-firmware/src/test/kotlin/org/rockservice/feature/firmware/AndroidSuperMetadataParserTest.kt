@@ -83,15 +83,18 @@ class AndroidSuperMetadataParserTest {
     @Test(expected = IllegalArgumentException::class)
     fun `rejects two corrupt geometry copies`() {
         val fixture = superImage()
-        fixture.bytes[fixture.primaryGeometryOffset + 8] = 1
-        fixture.bytes[fixture.backupGeometryOffset + 8] = 1
+        fixture.bytes[fixture.primaryGeometryOffset + 8] =
+            (fixture.bytes[fixture.primaryGeometryOffset + 8].toInt() xor 1).toByte()
+        fixture.bytes[fixture.backupGeometryOffset + 8] =
+            (fixture.bytes[fixture.backupGeometryOffset + 8].toInt() xor 1).toByte()
         parser.parse(ByteArrayInputStream(fixture.bytes))
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun `rejects invalid header checksum`() {
         val fixture = superImage()
-        fixture.bytes[fixture.primaryMetadataOffset.toInt() + 12] = 1
+        val offset = fixture.primaryMetadataOffset.toInt() + 12
+        fixture.bytes[offset] = (fixture.bytes[offset].toInt() xor 1).toByte()
         parser.parse(ByteArrayInputStream(fixture.bytes))
     }
 
@@ -204,7 +207,12 @@ class AndroidSuperMetadataParserTest {
     fun `rejects linear extent that exceeds block device size`() {
         val fixture = superImage(
             extents = listOf(ExtentFixture(sectors = 1000, targetData = 131_000)),
-            blockDevices = listOf(BlockDeviceFixture(sizeBytes = 64L * 1024 * 1024)),
+            blockDevices = listOf(
+                BlockDeviceFixture(
+                    firstLogicalSector = 40,
+                    sizeBytes = 64L * 1024 * 1024,
+                ),
+            ),
         )
         parser.parse(ByteArrayInputStream(fixture.bytes))
     }
