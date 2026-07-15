@@ -14,6 +14,7 @@ Implementado e coberto por testes/CI:
 - SHA-256 em streaming e limites para análise de arquivos;
 - parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos, sem expansão de payload;
 - parser estrutural Android Boot Image v0-v4 com validação de páginas, seções, offsets e truncamento, sem extração de payload;
+- parser raw de metadados Android `super`/liblp com validação de geometria, SHA-256, tabelas e referências cruzadas, sem mapear partições;
 - backend USB simulado com validações de alvo, limites, timeout e lifecycle;
 - backend Android USB Host em modo somente leitura para enumeração e descritores USB;
 - solicitação controlada de permissão USB e revalidação do alvo;
@@ -40,6 +41,8 @@ Ainda **não** estão implementados ou habilitados:
 
 - expansão ou extração de imagens Android Sparse;
 - extração ou modificação de payloads de Android Boot Images;
+- expansão automática de `super.img` sparse para análise liblp;
+- mapeamento ou extração de partições lógicas a partir de extents `super`;
 - transporte Rockchip real por `bulkTransfer()`;
 - identificação ativa de Loader ou Maskrom;
 - leitura de NAND, SPI NAND, eMMC ou partições via protocolo Rockchip;
@@ -57,7 +60,7 @@ Broadcasts USB servem apenas como sinal para uma nova enumeração. Nenhum dispo
 
 O codec Rockchip não expõe comandos de escrita e não representa subcódigos de erase/format. A sessão de protocolo permanece desconectada do hardware até existir validação física suficiente.
 
-Os parsers Android Sparse e Android Boot validam somente estrutura declarada e aplicam limites explícitos. Eles não provam compatibilidade da imagem com qualquer dispositivo e não habilitam gravação.
+Os parsers Android Sparse, Android Boot e `super`/liblp validam apenas estruturas declaradas e aplicam limites explícitos. Eles não provam compatibilidade da imagem com qualquer dispositivo e não habilitam gravação.
 
 ## Compilação
 
@@ -84,6 +87,7 @@ Consulte:
 - `docs/ROCKCHIP_METADATA_PARSERS.md`;
 - `docs/ANDROID_SPARSE_STRUCTURE.md`;
 - `docs/ANDROID_BOOT_IMAGE_STRUCTURE.md`;
+- `docs/ANDROID_SUPER_METADATA.md`;
 - `docs/ROADMAP.md`;
 - `docs/THREAT_MODEL.md`;
 - `SECURITY.md`.
