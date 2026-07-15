@@ -46,7 +46,11 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         val specs = querySpecs()
         val transport = try {
             opener.open(device)
-        } catch (error: RuntimeException) {
+        } catch (error: SecurityException) {
+            return failedOpenReport(specs, error.safeMessage())
+        } catch (error: IllegalArgumentException) {
+            return failedOpenReport(specs, error.safeMessage())
+        } catch (error: IllegalStateException) {
             return failedOpenReport(specs, error.safeMessage())
         }
 
@@ -70,7 +74,9 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         } finally {
             try {
                 session.close()
-            } catch (error: RuntimeException) {
+            } catch (error: SecurityException) {
+                Log.w(TAG, "Android denied access while closing Rockchip metadata probe session.", error)
+            } catch (error: IllegalStateException) {
                 Log.w(TAG, "Failed to close Rockchip metadata probe session.", error)
             }
         }
@@ -89,6 +95,7 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         val result = try {
             session.query(spec.operation, timeoutMillis = QUERY_TIMEOUT_MILLIS)
         } catch (timeout: TimeoutCancellationException) {
+            Log.w(TAG, "Metadata query ${spec.name} timed out after $QUERY_TIMEOUT_MILLIS ms.", timeout)
             return transportFailure(
                 spec = spec,
                 detail = "${transportMethod.displayName}/TIMEOUT: consulta excedeu $QUERY_TIMEOUT_MILLIS ms.",
@@ -97,7 +104,9 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
             throw cancelled
         } catch (error: RockchipUsbTransportException) {
             return transportFailure(spec, error.safeMessage())
-        } catch (error: RuntimeException) {
+        } catch (error: IllegalArgumentException) {
+            return transportFailure(spec, error.safeMessage())
+        } catch (error: IllegalStateException) {
             return transportFailure(spec, error.safeMessage())
         }
 
@@ -107,12 +116,12 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
                 stopRemainingQueries = false,
                 requiresReconnect = false,
             )
-        } catch (error: RuntimeException) {
+        } catch (error: IllegalArgumentException) {
             QueryOutcome(
                 entry = RockchipMetadataProbeEntry(
                     name = spec.name,
                     succeeded = false,
-                    value = "Resposta recebida, mas nao foi possivel interpretar: ${error.safeMessage()}",
+                    value = "Resposta recebida, mas não foi possível interpretar: ${error.safeMessage()}",
                 ),
                 stopRemainingQueries = false,
                 requiresReconnect = false,
@@ -148,7 +157,7 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         RockchipMetadataProbeEntry(
             name = name,
             succeeded = false,
-            value = "Nao executado porque o transporte perdeu sincronizacao durante $blocker.",
+            value = "Não executado porque o transporte perdeu sincronização durante $blocker.",
             attempted = false,
         )
 
