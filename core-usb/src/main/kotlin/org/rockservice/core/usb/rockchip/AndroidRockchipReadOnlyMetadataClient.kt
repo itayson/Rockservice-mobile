@@ -1,13 +1,19 @@
 package org.rockservice.core.usb.rockchip
 
 import android.content.Context
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.logging.Level
 import java.util.logging.Logger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
 internal fun interface RockchipReadOnlyTransportOpener {
@@ -34,7 +40,12 @@ data class RockchipMetadataProbeReport(
 class AndroidRockchipReadOnlyMetadataClient internal constructor(
     private val opener: RockchipReadOnlyTransportOpener,
     private val transportMethod: RockchipUsbIoMethod,
+    private val closeTimeoutMillis: Long = DEFAULT_CLOSE_TIMEOUT_MILLIS,
 ) {
+    init {
+        require(closeTimeoutMillis > 0L) { "closeTimeoutMillis must be greater than zero." }
+    }
+
     constructor(context: Context) : this(
         opener = createDefaultOpener(context.applicationContext),
         transportMethod = RockchipUsbIoMethod.USB_REQUEST,
@@ -70,26 +81,7 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
                 }
             }
         } finally {
-            try {
-                withContext(NonCancellable) {
-                    withTimeout(CLOSE_TIMEOUT_MILLIS) {
-                        session.close()
-                    }
-                }
-            } catch (error: TimeoutCancellationException) {
-                LOGGER.log(
-                    Level.WARNING,
-                    "Timeout de $CLOSE_TIMEOUT_MILLIS ms ao fechar a sessão Rockchip; reconexão necessária.",
-                    error,
-                )
-                requiresReconnect = true
-            } catch (error: SecurityException) {
-                LOGGER.log(Level.WARNING, "Android denied access while closing Rockchip metadata probe session.", error)
-                requiresReconnect = true
-            } catch (error: IllegalStateException) {
-                LOGGER.log(Level.WARNING, "Failed to close Rockchip metadata probe session.", error)
-                requiresReconnect = true
-            }
+            if (!closeSessionWithinDeadline(session)) requiresReconnect = true
         }
 
         return RockchipMetadataProbeReport(
@@ -98,6 +90,47 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
             requiresReconnect = requiresReconnect,
         )
     }
+
+    private suspend fun closeSessionWithinDeadline(session: RockchipReadOnlySession): Boolean =
+        withContext(NonCancellable + Dispatchers.IO) {
+            if (!CLOSE_WORKER_BUSY.compareAndSet(false, true)) {
+                LOGGER.warning("Fechamento Rockchip anterior ainda está bloqueado; reconexão necessária.")
+                return@withContext false
+            }
+
+            val task = FutureTask {
+                try {
+                    runBlocking { session.close() }
+                } finally {
+                    CLOSE_WORKER_BUSY.set(false)
+                }
+            }
+            Thread(task, "RockchipMetadataClose").apply {
+                isDaemon = true
+                start()
+            }
+
+            try {
+                task.get(closeTimeoutMillis, TimeUnit.MILLISECONDS)
+                true
+            } catch (error: TimeoutException) {
+                task.cancel(true)
+                LOGGER.log(
+                    Level.WARNING,
+                    "Timeout de $closeTimeoutMillis ms ao fechar a sessão Rockchip; reconexão necessária.",
+                    error,
+                )
+                false
+            } catch (error: InterruptedException) {
+                task.cancel(true)
+                Thread.currentThread().interrupt()
+                LOGGER.log(Level.WARNING, "Espera pelo fechamento Rockchip foi interrompida; reconexão necessária.", error)
+                false
+            } catch (error: ExecutionException) {
+                LOGGER.log(Level.WARNING, "Falha ao fechar a sessão Rockchip; reconexão necessária.", error.cause ?: error)
+                false
+            }
+        }
 
     private suspend fun query(
         session: RockchipReadOnlySession,
@@ -203,10 +236,10 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
 
     private companion object {
         const val QUERY_TIMEOUT_MILLIS = 10_000L
-        const val CLOSE_TIMEOUT_MILLIS = 2_000L
+        const val DEFAULT_CLOSE_TIMEOUT_MILLIS = 2_000L
         const val MAXIMUM_ERROR_LENGTH = 240
-        const val TAG = "RockchipMetadataClient"
-        val LOGGER: Logger = Logger.getLogger(TAG)
+        val LOGGER: Logger = Logger.getLogger("RockchipMetadataClient")
+        val CLOSE_WORKER_BUSY = AtomicBoolean(false)
 
         fun createDefaultOpener(context: Context): RockchipReadOnlyTransportOpener {
             val factory = AndroidRockchipReadOnlyTransportFactory(context)
