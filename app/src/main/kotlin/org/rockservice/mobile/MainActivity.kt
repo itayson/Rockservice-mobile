@@ -28,6 +28,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.rockservice.core.usb.AndroidUsbHostBackend
 import org.rockservice.feature.devicedetection.CapabilityDetector
 
@@ -42,12 +44,20 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 val capabilities = remember { CapabilityDetector(this).detect() }
                 val scope = rememberCoroutineScope()
+                val refreshMutex = remember { Mutex() }
                 var usbState by remember {
                     mutableStateOf<UsbDiagnosticsUiState>(UsbDiagnosticsUiState.Loading)
                 }
 
+                suspend fun refreshUsbDiagnostics() {
+                    refreshMutex.withLock {
+                        usbState = UsbDiagnosticsUiState.Loading
+                        usbState = scanUsbDiagnostics(usbBackend)
+                    }
+                }
+
                 LaunchedEffect(Unit) {
-                    usbState = scanUsbDiagnostics(usbBackend)
+                    refreshUsbDiagnostics()
                 }
 
                 Scaffold(
@@ -102,10 +112,7 @@ class MainActivity : ComponentActivity() {
                                 )
                                 Button(
                                     onClick = {
-                                        scope.launch {
-                                            usbState = UsbDiagnosticsUiState.Loading
-                                            usbState = scanUsbDiagnostics(usbBackend)
-                                        }
+                                        scope.launch { refreshUsbDiagnostics() }
                                     },
                                 ) {
                                     Text("Atualizar diagnóstico USB")
