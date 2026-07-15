@@ -12,7 +12,6 @@ hilt = "2.57.2"
 junit = "4.13.2"
 mockk = "1.14.6"
 robolectric = "4.16"
-detekt = "1.23.8"
 ktlint-plugin = "13.0.0"
 
 [libraries]
@@ -42,5 +41,4 @@ kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
-detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlint-plugin" }
