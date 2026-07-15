@@ -299,6 +299,17 @@ class HardwareValidationActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                            is RockchipMetadataProbeState.Error -> item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    ) {
+                                        Text("Falha no probe de metadados", style = MaterialTheme.typography.titleMedium)
+                                        Text(probeState.message)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
