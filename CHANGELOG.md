@@ -6,6 +6,7 @@
 
 - Fundação Android modular e segura com CI, CodeQL, Gitleaks e supply-chain checks.
 - Análise inicial de firmware com magic bytes, limites e SHA-256 em streaming.
+- Parser estrutural Android Sparse com validação defensiva de headers, chunks, limites e contabilidade de blocos sem expansão do payload.
 - Backend USB simulado com validação de alvo, timeout, cancelamento e lifecycle.
 - Backend Android USB Host real somente leitura para enumeração e descritores brutos.
 - Permissão USB controlada e revalidação do alvo antes da abertura.
@@ -25,3 +26,4 @@
 - Subcódigos de erase/format excluídos estruturalmente da API read-only.
 - Broadcasts USB tratados somente como gatilhos para nova enumeração, nunca como autorização de alvo.
 - Transporte físico Rockchip permanece sem implementação até validação em hardware autorizado.
+- Parser Android Sparse aplica limites explícitos e não expande payloads RAW durante a análise estrutural.
