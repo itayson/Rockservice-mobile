@@ -1,0 +1,22 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-disabled:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Bootstrap release gate
+        run: |
+          echo "::notice title=Release disabled::Automatic release publishing is intentionally disabled during the bootstrap phase."
+          echo "Required before re-enabling publication:"
+          echo "- reproducible signed release build and signature verification"
+          echo "- generated SBOM attached to the release candidate"
+          echo "- blocking dependency and secret scanning"
+          echo "- successful CodeQL analysis for Java/Kotlin and C++"
+          echo "- authorized hardware validation for the release candidate"

@@ -1,0 +1,34 @@
+language: "pt-BR"
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  path_instructions:
+    - path: "**/*.kt"
+      instructions: |
+        Marque como crítico qualquer operação destrutiva sem confirmação textual,
+        comando root não justificado, concatenação insegura de shell, ausência de hash,
+        vazamento de segredos, concorrência insegura ou erro sem mensagem acionável.
+    - path: "core-usb/**"
+      instructions: |
+        Verifique lifecycle de conexões, timeouts, cancelamento, alvo único, desconexão,
+        validação de VID/PID/endpoints e risco de brick. Escrita real deve estar atrás
+        de feature flag e acompanhada de testes e evidência de hardware.
+    - path: "native-*/**"
+      instructions: |
+        Procure overflow, use-after-free, bounds errors, vazamento de recursos,
+        comportamento indefinido e falta de fuzz/sanitizers.
+    - path: "feature-firmware/**"
+      instructions: |
+        Exija testes para arquivos truncados, headers malformados, limites,
+        path traversal, zip bombs, hashes e formatos desconhecidos.
+    - path: ".github/workflows/**"
+      instructions: |
+        Verifique permissões mínimas, pinning de actions, exposição de secrets,
+        artefatos e publicação somente por tag.
+  auto_review:
+    enabled: true
+    drafts: false
+chat:
+  auto_reply: true
