@@ -23,12 +23,13 @@ Entregue:
 - detecção de capacidades;
 - painel de diagnóstico USB;
 - seleção explícita de alvo;
-- lifecycle USB e attach/detach.
+- lifecycle USB e attach/detach;
+- ViewModel e coordenador testável para remover o estado operacional USB da `Activity`.
 
 Pendente:
 
-- ViewModel/use cases para remover estado operacional da Activity;
 - logs estruturados e exportação de relatório;
+- casos de uso adicionais para futuros fluxos críticos;
 - banco local quando existir requisito de persistência.
 
 ## Fase 2 — Laboratório de firmware
