@@ -1,53 +1,97 @@
 # Arquitetura
 
-## Estado atual do bootstrap
+## Estado atual
 
-O bootstrap atual ainda não implementa a cadeia completa de Clean Architecture no entry point. `MainActivity` instancia `CapabilityDetector` diretamente na composição para manter a primeira entrega mínima e verificável.
+A interface principal já não mantém o estado operacional do diagnóstico USB. O fluxo atual separa:
 
-Esse acoplamento é temporário e não deve ser usado como precedente para operações de hardware, firmware, shell, root ou escrita. Antes da introdução de backends reais, a composição deve migrar para ViewModel/use cases e portas explícitas.
+- `MainActivity`: composição da UI e lifecycle dos adaptadores Android ligados à Activity;
+- `UsbDiagnosticsViewModel`: cancelamento do refresh anterior e exposição do estado para a UI;
+- `core-usb/UsbDiagnosticsCoordinator`: transições determinísticas de estado e reconciliação da seleção;
+- `core-usb/AndroidUsbDiagnosticsScanner`: enumeração e inspeção passiva de dispositivos;
+- `UsbDiagnosticsUiState.kt`: projeção dos snapshots do core para textos/modelos de apresentação;
+- `AndroidUsbHostBackend`: adaptação concreta da API USB Host do Android.
+
+`CapabilityDetector` ainda é instanciado diretamente pela composição porque sua leitura é local, síncrona e sem estado operacional persistente. Operações futuras de firmware, shell, root ou escrita não devem seguir esse atalho.
 
 ## Arquitetura alvo
 
-Fluxo planejado: UI → ViewModel/use case → política → porta → adaptador.
+Fluxo: UI → ViewModel → coordenador → scanner/caso de uso → política/porta/adaptador.
 
 ```mermaid
 flowchart LR
-  UI[Compose UI] --> VM[ViewModel]
-  VM --> UC[Casos de uso]
-  UC --> POL[Políticas de segurança]
-  UC --> PORT[Interfaces/ports]
-  PORT --> USB[Android USB Host]
-  PORT --> SIM[USB simulado]
-  PORT --> FW[Parsers de firmware]
-  PORT --> NDK[Adaptadores NDK]
+  A[MainActivity / lifecycle] --> VM[UsbDiagnosticsViewModel]
+  A --> SCAN[core-usb AndroidUsbDiagnosticsScanner]
+  UI[Compose UI] --> VM
+  VM --> COORD[core-usb UsbDiagnosticsCoordinator]
+  COORD --> SCAN
+  COORD --> POL[Políticas de seleção]
+  SCAN --> USB[AndroidUsbHostBackend]
+  SCAN --> PROBE[Probe passivo Rockchip]
+  USB --> API[Android USB API]
+  COORD --> VM
+  VM --> UI
+  UI --> MAP[Mapeamento de apresentação toUiModel]
 ```
+
+O estado e as regras passivas reutilizáveis ficam no `core-usb`. O módulo `app` traduz os snapshots para rótulos de interface e mantém apenas a coordenação de lifecycle da tela.
+
+Para funcionalidades novas, a direção de dependência deve continuar favorecendo casos de uso e modelos testáveis. Adaptadores Android, NDK, rede ou root não devem ser invocados diretamente por composables.
 
 ## Regras
 
-1. UI não executa shell, root, USB ou escrita.
-2. Operações críticas exigem alvo único, validação e confirmação textual.
-3. Parsers tratam todo arquivo como não confiável.
-4. NDK fica atrás de interfaces Kotlin.
-5. Escrita real permanece desativada por build flag e por política até os gates de segurança serem implementados.
-6. Compatibilidade precisa de evidência e data de teste.
-7. Backends reais devem possuir lifecycle explícito, timeout, cancelamento cooperativo e encerramento idempotente.
+1. UI não executa shell, root, USB ou escrita diretamente.
+2. Estado operacional de fluxos assíncronos deve permanecer fora de `Activity`/composables.
+3. Regras reutilizáveis de enumeração e seleção USB pertencem ao `core-usb`, não ao módulo de apresentação.
+4. Operações críticas exigem alvo único, validação e confirmação textual.
+5. Parsers tratam todo arquivo como não confiável.
+6. NDK fica atrás de interfaces Kotlin.
+7. Escrita real permanece desativada por build flag e por política até os gates de segurança serem implementados.
+8. Compatibilidade precisa de evidência e data de teste.
+9. Backends reais devem possuir lifecycle explícito, timeout, cancelamento cooperativo e encerramento idempotente.
+10. Eventos de attach/detach nunca autorizam um alvo; apenas solicitam nova enumeração.
 
-## Fluxo USB
+## Fluxo USB passivo atual
 
 ```mermaid
 sequenceDiagram
-  participant U as Usuário
-  participant A as App
   participant O as Android USB API
-  participant D as Dispositivo
-  A->>O: enumerar
-  O-->>A: VID/PID
-  A->>U: solicitar permissão
-  U-->>O: consentimento
-  A->>D: consulta somente leitura
-  D-->>A: resposta
-  A->>A: validar e registrar
+  participant A as MainActivity
+  participant VM as ViewModel
+  participant C as Core Coordinator
+  participant S as Core Scanner
+  participant B as USB Backend
+  participant UI as Compose UI
+
+  O-->>A: attach/detach
+  A->>VM: refresh(scanner)
+  VM->>VM: cancelar refresh anterior
+  VM->>C: refresh(scanner)
+  C->>S: scan()
+  S->>B: enumerar e inspecionar topologia
+  B-->>S: descritores
+  S-->>C: snapshot de diagnóstico
+  C->>C: reconciliar alvo selecionado
+  C-->>VM: StateFlow
+  VM-->>UI: estado observado
 ```
+
+O backend e o monitor Android permanecem ligados ao lifecycle da `Activity` porque são recriados após mudança de configuração. O `ViewModel` não retém esses recursos; cada nova `Activity` fornece um scanner novo e cancela qualquer refresh iniciado pelo host anterior antes de fechar o backend.
+
+## Fluxo Rockchip somente leitura futuro
+
+O codec, a sessão abstrata e os parsers já existem, mas o transporte físico continua bloqueado por validação de hardware.
+
+```mermaid
+flowchart LR
+  UI[UI] --> VM[ViewModel]
+  VM --> UC[Consulta de metadados]
+  UC --> POL[Revalidar alvo/topologia/permissão]
+  POL --> SESSION[Sessão read-only]
+  SESSION --> TRANSPORT[Transporte Android validado]
+  TRANSPORT --> USB[USB físico]
+```
+
+A implementação de `TRANSPORT` está rastreada em `#19` e depende da matriz física de `#18`.
 
 ## Fluxo de gravação futuro
 
