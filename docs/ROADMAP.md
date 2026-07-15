@@ -42,13 +42,14 @@ Entregue:
 - leitura em streaming;
 - SHA-256;
 - limites para arquivos e headers truncados;
-- parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos.
+- parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos;
+- parser estrutural Android Boot Image v0-v4 com validação de layout, alinhamentos, offsets e truncamento.
 
 Pendente:
 
 - expansão e extração segura de Android Sparse;
+- interpretação adicional e extração controlada de payloads de boot images;
 - análise estrutural aprofundada de imagens raw;
-- boot images;
 - partições dinâmicas;
 - empacotamento validado.
 
