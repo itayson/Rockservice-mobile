@@ -17,68 +17,45 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.rockservice.core.usb.AndroidUsbAttachmentMonitor
+import org.rockservice.core.usb.AndroidUsbDiagnosticsScanner
 import org.rockservice.core.usb.AndroidUsbHostBackend
-import org.rockservice.core.usb.UsbTargetSelectionPolicy
+import org.rockservice.core.usb.UsbDiagnosticsScanner
+import org.rockservice.core.usb.UsbDiagnosticsState
 import org.rockservice.feature.devicedetection.CapabilityDetector
 
 class MainActivity : ComponentActivity() {
     private lateinit var usbBackend: AndroidUsbHostBackend
     private lateinit var usbAttachmentMonitor: AndroidUsbAttachmentMonitor
-    private val usbAttachmentEvents = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private lateinit var usbScanner: UsbDiagnosticsScanner
+    private lateinit var usbViewModel: UsbDiagnosticsViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        usbViewModel = ViewModelProvider(this)[UsbDiagnosticsViewModel::class.java]
         usbBackend = AndroidUsbHostBackend(applicationContext)
+        usbScanner = AndroidUsbDiagnosticsScanner(usbBackend)
         usbAttachmentMonitor = AndroidUsbAttachmentMonitor(applicationContext) {
-            // The broadcast is only a hint. The UI always performs a fresh enumeration.
-            usbAttachmentEvents.tryEmit(Unit)
+            // The broadcast is only a hint. The ViewModel always requests a fresh enumeration.
+            usbViewModel.refresh(usbScanner)
         }
         usbAttachmentMonitor.start()
+        usbViewModel.refresh(usbScanner)
 
         setContent {
             MaterialTheme {
                 val capabilities = remember { CapabilityDetector(this).detect() }
-                val scope = rememberCoroutineScope()
-                val refreshMutex = remember { Mutex() }
-                val usbState = remember {
-                    mutableStateOf<UsbDiagnosticsUiState>(UsbDiagnosticsUiState.Loading)
-                }
-                val selectedTransportId = remember { mutableStateOf<String?>(null) }
-
-                suspend fun refreshUsbDiagnostics() {
-                    refreshMutex.withLock {
-                        usbState.value = UsbDiagnosticsUiState.Loading
-                        val refreshed = scanUsbDiagnostics(usbBackend)
-                        if (refreshed is UsbDiagnosticsUiState.Ready) {
-                            selectedTransportId.value = UsbTargetSelectionPolicy.reconcile(
-                                selectedTransportId = selectedTransportId.value,
-                                devices = refreshed.devices.map { device -> device.descriptor },
-                            )
-                        }
-                        usbState.value = refreshed
-                    }
-                }
-
-                LaunchedEffect(Unit) {
-                    refreshUsbDiagnostics()
-                    usbAttachmentEvents.collect {
-                        refreshUsbDiagnostics()
-                    }
-                }
+                val usbScreenState by usbViewModel.state.collectAsState()
 
                 Scaffold(
                     topBar = {
@@ -130,25 +107,23 @@ class MainActivity : ComponentActivity() {
                                 Text(
                                     "Eventos de conexão apenas disparam uma nova enumeração. Nenhum broadcast é tratado como autorização de alvo.",
                                 )
-                                selectedTransportId.value?.let { transportId ->
+                                usbScreenState.selectedTransportId?.let { transportId ->
                                     Text("Alvo selecionado: $transportId")
                                 }
                                 Button(
-                                    onClick = {
-                                        scope.launch { refreshUsbDiagnostics() }
-                                    },
+                                    onClick = { usbViewModel.refresh(usbScanner) },
                                 ) {
                                     Text("Atualizar diagnóstico USB")
                                 }
                             }
                         }
 
-                        when (val state = usbState.value) {
-                            UsbDiagnosticsUiState.Loading -> {
+                        when (val state = usbScreenState.diagnostics) {
+                            UsbDiagnosticsState.Loading -> {
                                 item { CircularProgressIndicator() }
                             }
 
-                            is UsbDiagnosticsUiState.Error -> {
+                            is UsbDiagnosticsState.Error -> {
                                 item {
                                     Card {
                                         Column(Modifier.padding(16.dp)) {
@@ -159,12 +134,16 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            is UsbDiagnosticsUiState.Ready -> {
+                            is UsbDiagnosticsState.Ready -> {
                                 if (state.devices.isEmpty()) {
                                     item { Text("Nenhum dispositivo USB detectado.") }
                                 } else {
-                                    items(state.devices, key = { it.transportId }) { device ->
-                                        val isSelected = selectedTransportId.value == device.transportId
+                                    items(
+                                        items = state.devices,
+                                        key = { snapshot -> requireNotNull(snapshot.descriptor.transportId) },
+                                    ) { snapshot ->
+                                        val device = snapshot.toUiModel()
+                                        val isSelected = usbScreenState.selectedTransportId == device.transportId
                                         Card {
                                             Column(
                                                 modifier = Modifier.padding(16.dp),
@@ -176,12 +155,7 @@ class MainActivity : ComponentActivity() {
                                                 Text(device.topologyLabel)
                                                 Text(device.rockchipProbeLabel)
                                                 Button(
-                                                    onClick = {
-                                                        selectedTransportId.value = UsbTargetSelectionPolicy.select(
-                                                            candidate = device.descriptor,
-                                                            devices = state.devices.map { item -> item.descriptor },
-                                                        )
-                                                    },
+                                                    onClick = { usbViewModel.selectTarget(device.transportId) },
                                                     enabled = !isSelected,
                                                 ) {
                                                     Text(if (isSelected) "Alvo selecionado" else "Selecionar alvo")
@@ -199,6 +173,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (::usbViewModel.isInitialized) {
+            usbViewModel.cancelRefresh()
+        }
         if (::usbAttachmentMonitor.isInitialized) {
             usbAttachmentMonitor.close()
         }
