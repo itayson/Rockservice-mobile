@@ -1,29 +1,22 @@
 name: Release
+
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
+
 jobs:
-  release:
+  release-disabled:
     runs-on: ubuntu-latest
-    environment: release
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "17", cache: gradle }
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-      - name: Decode signing key
-        env:
-          KEYSTORE_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
-        run: echo "$KEYSTORE_B64" | base64 --decode > release.jks
-      - name: Build
-        env:
-          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
-          ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
-          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew :app:assembleRelease
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: app/build/outputs/apk/release/*.apk
+      - name: Bootstrap release gate
+        run: |
+          echo "::notice title=Release disabled::Automatic release publishing is intentionally disabled during the bootstrap phase."
+          echo "Required before re-enabling publication:"
+          echo "- reproducible signed release build and signature verification"
+          echo "- generated SBOM attached to the release candidate"
+          echo "- blocking dependency and secret scanning"
+          echo "- successful CodeQL analysis for Java/Kotlin and C++"
+          echo "- authorized hardware validation for the release candidate"
