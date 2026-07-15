@@ -16,13 +16,13 @@ data class FirmwareLabReport(
     val warnings: List<String>,
     val sections: List<FirmwareLabSection>,
 ) {
-    /** Suggested filename for exporting this report without exposing the original document URI. */
+    /** Suggested filename with path separators and relative-path prefixes removed. */
     val suggestedReportFileName: String
         get() {
             val base = displayName
                 .substringBeforeLast('.', missingDelimiterValue = displayName)
                 .replace(Regex("[^A-Za-z0-9._-]"), "_")
-                .trim('_')
+                .trim { character -> character == '_' || character == '.' }
                 .ifBlank { "firmware" }
             return "$base-rockservice-report.txt"
         }
