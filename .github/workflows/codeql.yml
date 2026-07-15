@@ -56,7 +56,16 @@ jobs:
           chmod +x gradlew
           ./gradlew --no-daemon :app:assembleDebug :native-rockchip:assembleDebug :native-image-tools:assembleDebug
 
-      - uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
+      - name: Generate CodeQL SARIF
+        uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           category: "/language:${{ matrix.language }}"
+          output: "../results-${{ matrix.language }}"
+          upload: never
           upload-database: false
+
+      - name: Upload CodeQL SARIF
+        uses: github/codeql-action/upload-sarif@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
+        with:
+          sarif_file: "../results-${{ matrix.language }}"
+          category: "/language:${{ matrix.language }}"
