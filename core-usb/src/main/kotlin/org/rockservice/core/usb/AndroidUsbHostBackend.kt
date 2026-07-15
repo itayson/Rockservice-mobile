@@ -22,6 +22,8 @@ internal data class UsbHostDeviceSnapshot(
 internal interface UsbHostPlatform {
     suspend fun listDevices(): List<UsbHostDeviceSnapshot>
 
+    suspend fun inspectTopology(transportId: String): UsbDeviceTopology
+
     suspend fun requestPermission(transportId: String): Boolean
 
     suspend fun readRawDescriptors(transportId: String): ByteArray
@@ -42,6 +44,30 @@ class AndroidUsbHostBackend internal constructor(
         runOperation(timeoutMillis) {
             platform.listDevices().map { snapshot -> snapshot.toDescriptor() }
         }
+
+    /**
+     * Inspects interface and endpoint descriptors without claiming an interface or sending a USB
+     * transfer. The target is revalidated against the latest enumeration before inspection.
+     */
+    suspend fun inspectTopology(
+        device: UsbDeviceDescriptor,
+        timeoutMillis: Long = UsbBackend.DEFAULT_TIMEOUT_MILLIS,
+    ): UsbDeviceTopology = runOperation(timeoutMillis) {
+        val transportId = requireNotNull(device.transportId) {
+            "Android USB Host topology inspection requires a transportId from a fresh enumeration."
+        }
+        val attached = findAttachedTarget(transportId)
+        require(matchesIdentity(device, attached)) {
+            "USB target identity changed before topology inspection."
+        }
+        currentCoroutineContext().ensureActive()
+
+        val topology = platform.inspectTopology(transportId)
+        require(topology.transportId == transportId) {
+            "USB topology belongs to a different transport target."
+        }
+        topology
+    }
 
     /**
      * Reads a bounded slice of the USB device's raw descriptor bytes.

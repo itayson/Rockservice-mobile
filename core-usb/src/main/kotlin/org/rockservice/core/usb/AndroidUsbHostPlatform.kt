@@ -5,7 +5,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import android.os.Build
 import java.util.concurrent.ConcurrentHashMap
@@ -48,6 +50,32 @@ internal class AndroidUsbHostPlatform(
         return usbManager.deviceList.values
             .map { device -> device.toSnapshot(usbManager.hasPermission(device)) }
             .sortedBy(UsbHostDeviceSnapshot::transportId)
+    }
+
+    override suspend fun inspectTopology(transportId: String): UsbDeviceTopology {
+        checkOpen()
+        val device = requireNotNull(resolveDevice(transportId)) {
+            "USB device is no longer attached."
+        }
+
+        val interfaces = (0 until device.interfaceCount).map { interfaceIndex ->
+            val usbInterface = device.getInterface(interfaceIndex)
+            UsbInterfaceDescriptor(
+                id = usbInterface.id,
+                alternateSetting = usbInterface.alternateSetting,
+                interfaceClass = usbInterface.interfaceClass,
+                interfaceSubclass = usbInterface.interfaceSubclass,
+                interfaceProtocol = usbInterface.interfaceProtocol,
+                endpoints = (0 until usbInterface.endpointCount).map { endpointIndex ->
+                    usbInterface.getEndpoint(endpointIndex).toDescriptor()
+                },
+            )
+        }
+
+        return UsbDeviceTopology(
+            transportId = device.deviceName,
+            interfaces = interfaces,
+        )
     }
 
     override suspend fun requestPermission(transportId: String): Boolean =
@@ -118,6 +146,25 @@ internal class AndroidUsbHostPlatform(
             deviceSubclass = deviceSubclass,
             deviceProtocol = deviceProtocol,
             hasPermission = hasPermission,
+        )
+
+    private fun UsbEndpoint.toDescriptor(): UsbEndpointDescriptor =
+        UsbEndpointDescriptor(
+            address = address,
+            direction = if (direction == UsbConstants.USB_DIR_IN) {
+                UsbEndpointDirection.IN
+            } else {
+                UsbEndpointDirection.OUT
+            },
+            transferType = when (type) {
+                UsbConstants.USB_ENDPOINT_XFER_CONTROL -> UsbTransferType.CONTROL
+                UsbConstants.USB_ENDPOINT_XFER_ISOC -> UsbTransferType.ISOCHRONOUS
+                UsbConstants.USB_ENDPOINT_XFER_BULK -> UsbTransferType.BULK
+                UsbConstants.USB_ENDPOINT_XFER_INT -> UsbTransferType.INTERRUPT
+                else -> UsbTransferType.UNKNOWN
+            },
+            maxPacketSize = maxPacketSize,
+            interval = interval,
         )
 
     private fun safeMetadata(block: () -> String?): String? =
