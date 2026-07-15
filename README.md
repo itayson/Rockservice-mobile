@@ -12,6 +12,7 @@ Implementado e coberto por testes/CI:
 - detecção de capacidades do dispositivo host;
 - identificação inicial de formatos de firmware por magic bytes;
 - SHA-256 em streaming e limites para análise de arquivos;
+- parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos, sem expansão de payload;
 - backend USB simulado com validações de alvo, limites, timeout e lifecycle;
 - backend Android USB Host em modo somente leitura para enumeração e descritores USB;
 - solicitação controlada de permissão USB e revalidação do alvo;
@@ -36,6 +37,7 @@ O backend Android USB Host e as camadas passivas acima estão implementados e co
 
 Ainda **não** estão implementados ou habilitados:
 
+- expansão ou extração de imagens Android Sparse;
 - transporte Rockchip real por `bulkTransfer()`;
 - identificação ativa de Loader ou Maskrom;
 - leitura de NAND, SPI NAND, eMMC ou partições via protocolo Rockchip;
@@ -52,6 +54,8 @@ A validação física do USB Host está rastreada em `#18`. O transporte Rockchi
 Broadcasts USB servem apenas como sinal para uma nova enumeração. Nenhum dispositivo é autorizado diretamente por dados recebidos de broadcast.
 
 O codec Rockchip não expõe comandos de escrita e não representa subcódigos de erase/format. A sessão de protocolo permanece desconectada do hardware até existir validação física suficiente.
+
+O parser Android Sparse valida somente a estrutura declarada e aplica limites explícitos. Ele não prova compatibilidade da imagem com qualquer dispositivo e não habilita gravação.
 
 ## Compilação
 
@@ -76,6 +80,7 @@ Consulte:
 - `docs/ROCKCHIP_READONLY_PROTOCOL_CODEC.md`;
 - `docs/ROCKCHIP_READONLY_SESSION.md`;
 - `docs/ROCKCHIP_METADATA_PARSERS.md`;
+- `docs/ANDROID_SPARSE_STRUCTURE.md`;
 - `docs/ROADMAP.md`;
 - `docs/THREAT_MODEL.md`;
 - `SECURITY.md`.

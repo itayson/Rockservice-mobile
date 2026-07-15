@@ -41,12 +41,13 @@ Entregue:
 - identificação de formatos por assinaturas;
 - leitura em streaming;
 - SHA-256;
-- limites para arquivos e headers truncados.
+- limites para arquivos e headers truncados;
+- parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos.
 
 Pendente:
 
-- extração segura;
-- sparse/raw;
+- expansão e extração segura de Android Sparse;
+- análise estrutural aprofundada de imagens raw;
 - boot images;
 - partições dinâmicas;
 - empacotamento validado.
