@@ -79,6 +79,20 @@ class FirmwareLabActivity : ComponentActivity() {
                         item {
                             Button(
                                 onClick = {
+                                    startActivity(
+                                        Intent(
+                                            this@FirmwareLabActivity,
+                                            HardwareValidationActivity::class.java,
+                                        ),
+                                    )
+                                },
+                            ) {
+                                Text("Validar hardware Rockchip por OTG")
+                            }
+                        }
+                        item {
+                            Button(
+                                onClick = {
                                     startActivity(Intent(this@FirmwareLabActivity, MainActivity::class.java))
                                 },
                             ) {
