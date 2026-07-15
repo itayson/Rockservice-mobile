@@ -44,4 +44,24 @@ class SimulatedUsbBackendTest {
         val backend = SimulatedUsbBackend()
         backend.read(backend.listDevices().single(), Long.MAX_VALUE, 2)
     }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `rejects nonpositive timeout`() = runTest {
+        val backend = SimulatedUsbBackend()
+        backend.listDevices(timeoutMillis = 0)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `rejects operations after close`() = runTest {
+        val backend = SimulatedUsbBackend()
+        backend.close()
+        backend.listDevices()
+    }
+
+    @Test
+    fun `close is idempotent`() = runTest {
+        val backend = SimulatedUsbBackend()
+        backend.close()
+        backend.close()
+    }
 }
