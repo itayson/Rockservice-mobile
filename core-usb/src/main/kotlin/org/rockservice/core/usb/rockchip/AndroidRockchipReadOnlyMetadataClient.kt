@@ -1,6 +1,7 @@
 package org.rockservice.core.usb.rockchip
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
@@ -72,9 +73,9 @@ class AndroidRockchipReadOnlyMetadataClient(context: Context) {
         } finally {
             try {
                 session.close()
-            } catch (_: RuntimeException) {
-                // The query result is more useful than a secondary cleanup failure. The Android IO
-                // adapter still attempts releaseInterface and connection.close deterministically.
+            } catch (error: RuntimeException) {
+                // Preserve the query result while keeping cleanup failures visible for diagnostics.
+                Log.w(TAG, "Failed to close isolated Rockchip metadata session for $name.", error)
             }
         }
     }
@@ -84,5 +85,6 @@ class AndroidRockchipReadOnlyMetadataClient(context: Context) {
 
     private companion object {
         const val QUERY_TIMEOUT_MILLIS = 5_000L
+        const val TAG = "RockchipMetadataClient"
     }
 }
