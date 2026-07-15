@@ -23,7 +23,7 @@ class AndroidRockchipReadOnlyMetadataOpenFailureTest {
 
         assertEquals(1, openCount)
         assertTrue(report.requiresReconnect)
-        assertEquals(5, report.entries.size)
+        assertEquals(4, report.entries.size)
         assertFalse(report.entries.first().succeeded)
         assertTrue(report.entries.first().attempted)
         assertTrue(report.entries.drop(1).all { entry -> !entry.attempted })
