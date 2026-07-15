@@ -1,6 +1,7 @@
 package org.rockservice.core.usb
 
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -60,7 +61,7 @@ class UsbDiagnosticsCoordinatorTest {
     }
 
     @Test
-    fun `preserves selected target when refresh returns an error`() = runTest {
+    fun `clears selected target when refresh returns an error`() = runTest {
         val coordinator = UsbDiagnosticsCoordinator()
         val scanner = QueueScanner(
             ready("usb-1"),
@@ -71,7 +72,7 @@ class UsbDiagnosticsCoordinatorTest {
         coordinator.selectTarget("usb-1")
         coordinator.refresh(scanner)
 
-        assertEquals("usb-1", coordinator.state.value.selectedTransportId)
+        assertNull(coordinator.state.value.selectedTransportId)
         assertEquals(
             "test failure",
             (coordinator.state.value.diagnostics as UsbDiagnosticsState.Error).message,
@@ -86,6 +87,36 @@ class UsbDiagnosticsCoordinatorTest {
         coordinator.selectTarget("usb-missing")
 
         assertNull(coordinator.state.value.selectedTransportId)
+    }
+
+    @Test
+    fun `selection waits for in-flight refresh and uses the newest enumeration`() = runTest {
+        val coordinator = UsbDiagnosticsCoordinator()
+        coordinator.refresh(QueueScanner(ready("usb-1")))
+
+        val scanStarted = CompletableDeferred<Unit>()
+        val releaseScan = CompletableDeferred<Unit>()
+        val refresh = async {
+            coordinator.refresh(
+                BlockingScanner(
+                    state = ready("usb-1", "usb-2"),
+                    scanStarted = scanStarted,
+                    releaseScan = releaseScan,
+                ),
+            )
+        }
+        scanStarted.await()
+
+        val selection = async { coordinator.selectTarget("usb-2") }
+        releaseScan.complete(Unit)
+        refresh.await()
+        selection.await()
+
+        assertEquals("usb-2", coordinator.state.value.selectedTransportId)
+        assertEquals(
+            2,
+            (coordinator.state.value.diagnostics as UsbDiagnosticsState.Ready).devices.size,
+        )
     }
 
     private class QueueScanner(
@@ -111,6 +142,18 @@ class UsbDiagnosticsCoordinatorTest {
             } finally {
                 activeScans.decrementAndGet()
             }
+        }
+    }
+
+    private class BlockingScanner(
+        private val state: UsbDiagnosticsState,
+        private val scanStarted: CompletableDeferred<Unit>,
+        private val releaseScan: CompletableDeferred<Unit>,
+    ) : UsbDiagnosticsScanner {
+        override suspend fun scan(): UsbDiagnosticsState {
+            scanStarted.complete(Unit)
+            releaseScan.await()
+            return state
         }
     }
 
