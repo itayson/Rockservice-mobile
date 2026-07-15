@@ -2,7 +2,7 @@
 
 ## Objetivo
 
-Esta camada codifica e valida apenas estruturas de protocolo para consultas de metadados. Ela não abre dispositivos, não reivindica interfaces e não executa transferências USB.
+Esta camada codifica e valida estruturas de protocolo para consultas de metadados. O transporte Android permanece separado e condicionado ao fluxo de validação de hardware.
 
 A implementação foi escrita em Kotlin a partir do comportamento público documentado pelo código-fonte do `rkdeveloptool` da organização `rockchip-linux`, observado no commit `304f073752fd25c854e1bcf05d8e7f925b1f4e14`.
 
@@ -14,21 +14,16 @@ O codec contém somente:
 - `READ_FLASH_ID` (`0x01`);
 - `READ_FLASH_INFO` (`0x1A`);
 - `READ_CHIP_INFO` (`0x1B`);
-- `READ_STORAGE` (`0x2B`);
 - `READ_CAPABILITY` (`0xAA`).
 
-`READ_LBA`, leitura de SDRAM, leitura de eFuse e outros comandos que ampliariam o acesso a dados não fazem parte desta primeira allowlist.
+`READ_STORAGE` (`0x2B`) foi removido do perfil validado depois que o teste físico apresentou timeout na fase de dados e a enumeração de operações do `rkdeveloptool` usada como referência não apresentou esse opcode entre as consultas de metadados.
 
 ## Subcódigos de Test Unit Ready
 
-O protocolo de referência reutiliza o byte de subcódigo de `TEST_UNIT_READY` para comportamentos diferentes, incluindo operações destrutivas. Por isso o codec não aceita valores arbitrários.
-
-A allowlist contém apenas:
+O codec não aceita subcódigos arbitrários. A allowlist contém apenas:
 
 - `NONE` (`0x00`);
 - `GET_USER_SECTOR_PROGRESS` (`0xF9`).
-
-Subcódigos associados a erase/format não existem na API pública deste codec e não podem ser codificados por ele.
 
 ## CBW e CSW
 
@@ -46,9 +41,13 @@ O codec valida:
 - correspondência exata de tag;
 - status conhecido.
 
+## Comportamento do probe físico
+
+O probe mantém uma única sessão USB enquanto as transações permanecem sincronizadas. Qualquer timeout ou falha de transporte interrompe as consultas restantes e exige reconexão antes de uma nova tentativa.
+
 ## Limite de integração
 
-O codec é propositalmente independente do transporte. Uma futura sessão USB somente leitura deve continuar separada e exigir, antes de transmitir qualquer CBW:
+A sessão USB somente leitura exige:
 
 1. alvo selecionado de forma inequívoca;
 2. VID Rockchip e topologia allowlisted;
@@ -57,5 +56,3 @@ O codec é propositalmente independente do transporte. Uma futura sessão USB so
 5. timeouts finitos;
 6. nenhuma operação fora da allowlist;
 7. validação em hardware autorizado.
-
-Até essa validação existir, o codec não é conectado ao painel do aplicativo nem executado contra um dispositivo físico.

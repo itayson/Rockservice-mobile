@@ -18,7 +18,6 @@ enum class RockchipReadOnlyOperation(
         maxResponseLength = 512,
     ),
     READ_CHIP_INFO(opcode = 0x1B, transferLength = 16),
-    READ_STORAGE(opcode = 0x2B, transferLength = 4),
     READ_CAPABILITY(opcode = 0xAA, transferLength = 8),
 }
 
