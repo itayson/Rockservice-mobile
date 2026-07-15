@@ -6,6 +6,8 @@
 
 - Fundação Android modular e segura com CI, CodeQL, Gitleaks e supply-chain checks.
 - Análise inicial de firmware com magic bytes, limites e SHA-256 em streaming.
+- Laboratório de Firmware utilizável no app, com seletor de documentos, análise em background, prévia e exportação de relatório técnico.
+- Detecção de Android Boot Image e Android Super raw no analisador de formatos.
 - Parser estrutural Android Sparse com validação defensiva de headers, chunks, limites e contabilidade de blocos sem expansão do payload.
 - Parser estrutural Android Boot Image v0-v4 com validação defensiva de headers, páginas, seções, offsets e truncamento sem extração de payload.
 - Parser raw de metadata Android `super`/liblp com validação de geometria primária/backup, SHA-256, tabelas, extents, grupos e block devices sem mapear partições.
@@ -24,6 +26,7 @@
 
 ### Security
 
+- Laboratório de Firmware usa somente documentos escolhidos pelo usuário e não inclui o URI original no relatório exportado.
 - Publicação automática de releases desativada até assinatura, SBOM e gates bloqueantes.
 - Subcódigos de erase/format excluídos estruturalmente da API read-only.
 - Broadcasts USB tratados somente como gatilhos para nova enumeração, nunca como autorização de alvo.
