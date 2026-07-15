@@ -19,15 +19,32 @@ class FirmwareAnalyzerTest {
     }
 
     @Test
-    fun `identifies android sparse image`() {
+    fun `identifies android sparse image at exact four byte signature`() {
         val bytes = byteArrayOf(0x3A, 0xFF.toByte(), 0x26, 0xED.toByte())
         assertEquals(FirmwareFormat.ANDROID_SPARSE, analyzer.analyze(ByteArrayInputStream(bytes)).format)
     }
 
     @Test
-    fun `identifies android boot image`() {
+    fun `rejects partial four byte sparse signature`() {
+        assertUnknown(byteArrayOf(0x3A, 0xFF.toByte(), 0x26))
+    }
+
+    @Test
+    fun `identifies android boot image at exact eight byte signature`() {
         val bytes = "ANDROID!".toByteArray(Charsets.US_ASCII)
         assertEquals(FirmwareFormat.ANDROID_BOOT_IMAGE, analyzer.analyze(ByteArrayInputStream(bytes)).format)
+    }
+
+    @Test
+    fun `rejects truncated android boot signature`() {
+        assertUnknown("ANDROID".toByteArray(Charsets.US_ASCII))
+    }
+
+    @Test
+    fun `identifies raw android super by primary geometry magic`() {
+        val bytes = ByteArray(4100)
+        byteArrayOf(0x67, 0x44, 0x6C, 0x61).copyInto(bytes, destinationOffset = 4096)
+        assertEquals(FirmwareFormat.ANDROID_SUPER_RAW, analyzer.analyze(ByteArrayInputStream(bytes)).format)
     }
 
     @Test
@@ -35,6 +52,13 @@ class FirmwareAnalyzerTest {
         val bytes = ByteArray(8196)
         byteArrayOf(0x67, 0x44, 0x6C, 0x61).copyInto(bytes, destinationOffset = 8192)
         assertEquals(FirmwareFormat.ANDROID_SUPER_RAW, analyzer.analyze(ByteArrayInputStream(bytes)).format)
+    }
+
+    @Test
+    fun `rejects incomplete super magic at backup boundary`() {
+        val bytes = ByteArray(8195)
+        byteArrayOf(0x67, 0x44, 0x6C).copyInto(bytes, destinationOffset = 8192)
+        assertUnknown(bytes)
     }
 
     @Test
@@ -61,6 +85,10 @@ class FirmwareAnalyzerTest {
         val result = analyzer.analyze(ByteArrayInputStream(byteArrayOf(0x50)))
         assertEquals(FirmwareFormat.UNKNOWN, result.format)
         assertTrue(result.warnings.isNotEmpty())
+    }
+
+    private fun assertUnknown(bytes: ByteArray) {
+        assertEquals(FirmwareFormat.UNKNOWN, analyzer.analyze(ByteArrayInputStream(bytes)).format)
     }
 
     private class PartialInputStream(
