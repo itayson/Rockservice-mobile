@@ -1,0 +1,5 @@
+* @rockservice-maintainers
+/core-security/ @rockservice-security
+/core-usb/ @rockservice-usb
+/native-*/ @rockservice-native
+/.github/workflows/ @rockservice-devsecops

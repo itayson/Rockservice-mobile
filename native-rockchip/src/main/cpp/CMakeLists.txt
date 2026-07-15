@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(native_rockchip)
+add_library(native_rockchip SHARED native_stub.cpp)
+find_library(log-lib log)
+target_link_libraries(native_rockchip ${log-lib})
