@@ -23,6 +23,19 @@ class AndroidUsbHostBackendTest {
     }
 
     @Test
+    fun `topology inspection is passive and returns endpoint metadata`() = runTest {
+        val platform = FakeUsbHostPlatform(initialPermission = false)
+        val backend = AndroidUsbHostBackend(platform)
+        val device = backend.listDevices().single()
+
+        val topology = backend.inspectTopology(device)
+
+        assertEquals("usb-host://1", topology.transportId)
+        assertTrue(topology.hasBidirectionalBulkPair())
+        assertEquals(0, platform.permissionRequests)
+    }
+
+    @Test
     fun `read requests permission and returns bounded raw descriptor slice`() = runTest {
         val platform = FakeUsbHostPlatform(initialPermission = false)
         val backend = AndroidUsbHostBackend(platform)
@@ -126,6 +139,38 @@ class AndroidUsbHostBackendTest {
                     hasPermission = permissionGranted,
                 )
             )
+
+        override suspend fun inspectTopology(transportId: String): UsbDeviceTopology {
+            require(transportId == device.transportId)
+            return UsbDeviceTopology(
+                transportId = transportId,
+                interfaces = listOf(
+                    UsbInterfaceDescriptor(
+                        id = 0,
+                        alternateSetting = 0,
+                        interfaceClass = 0xFF,
+                        interfaceSubclass = 0,
+                        interfaceProtocol = 0,
+                        endpoints = listOf(
+                            UsbEndpointDescriptor(
+                                address = 0x81,
+                                direction = UsbEndpointDirection.IN,
+                                transferType = UsbTransferType.BULK,
+                                maxPacketSize = 512,
+                                interval = 0,
+                            ),
+                            UsbEndpointDescriptor(
+                                address = 0x01,
+                                direction = UsbEndpointDirection.OUT,
+                                transferType = UsbTransferType.BULK,
+                                maxPacketSize = 512,
+                                interval = 0,
+                            ),
+                        ),
+                    )
+                ),
+            )
+        }
 
         override suspend fun requestPermission(transportId: String): Boolean {
             require(transportId == device.transportId)
