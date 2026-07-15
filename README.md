@@ -23,6 +23,6 @@ Requisitos: Android Studio compatível com AGP 8.13.2, JDK 17, Android SDK 36, C
 ./gradlew :app:assembleDebug test
 ```
 
-> O arquivo `gradle-wrapper.jar` não é incluído neste pacote gerado. Execute `gradle wrapper --gradle-version 8.13` em um ambiente confiável ou use o wrapper criado pelo Android Studio.
+O wrapper oficial do Gradle 8.13 está versionado em `gradle/wrapper/gradle-wrapper.jar` e a distribuição é validada por URL HTTPS no arquivo `gradle-wrapper.properties`.
 
 Consulte `docs/FEASIBILITY.md`, `docs/ARCHITECTURE.md`, `docs/ROADMAP.md` e `SECURITY.md`.
