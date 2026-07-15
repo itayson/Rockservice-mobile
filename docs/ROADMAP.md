@@ -43,14 +43,16 @@ Entregue:
 - SHA-256;
 - limites para arquivos e headers truncados;
 - parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos;
-- parser estrutural Android Boot Image v0-v4 com validação de layout, alinhamentos, offsets e truncamento.
+- parser estrutural Android Boot Image v0-v4 com validação de layout, alinhamentos, offsets e truncamento;
+- parser raw de metadata de partições dinâmicas Android `super`/liblp com validação de geometria, checksums, tabelas e referências cruzadas.
 
 Pendente:
 
 - expansão e extração segura de Android Sparse;
 - interpretação adicional e extração controlada de payloads de boot images;
-- análise estrutural aprofundada de imagens raw;
-- partições dinâmicas;
+- tradução segura de `super.img` sparse para o parser raw;
+- mapeamento e extração controlada de partições lógicas;
+- análise estrutural aprofundada de imagens raw/filesystems;
 - empacotamento validado.
 
 ## Fase 3 — ADB e diagnóstico
