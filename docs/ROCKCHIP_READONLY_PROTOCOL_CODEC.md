@@ -6,7 +6,7 @@ Esta camada codifica e valida estruturas de protocolo para consultas de metadado
 
 A implementação foi escrita em Kotlin a partir do comportamento público documentado pelo código-fonte do `rkdeveloptool` da organização `rockchip-linux`, observado no commit `304f073752fd25c854e1bcf05d8e7f925b1f4e14`.
 
-## Operações allowlisted
+## Operações disponíveis no codec
 
 O codec contém somente:
 
@@ -16,7 +16,20 @@ O codec contém somente:
 - `READ_CHIP_INFO` (`0x1B`);
 - `READ_CAPABILITY` (`0xAA`).
 
-`READ_STORAGE` (`0x2B`) foi removido do perfil validado depois que o teste físico apresentou timeout na fase de dados e a enumeração de operações do `rkdeveloptool` usada como referência não apresentou esse opcode entre as consultas de metadados.
+A presença de uma operação no codec não implica que ela seja transmitida pelo probe físico padrão. O codec preserva `READ_CAPABILITY` para futura ativação por perfil de dispositivo quando houver evidência física de compatibilidade.
+
+`READ_STORAGE` (`0x2B`) foi removido depois que o teste físico apresentou timeout na fase de dados e a enumeração de operações do `rkdeveloptool` usada como referência não apresentou esse opcode entre as consultas de metadados.
+
+## Baseline físico validado
+
+No dispositivo Rockchip `2207:320B` testado por USB Host Android, o baseline que concluiu repetidamente sem timeout é:
+
+1. `TEST_UNIT_READY`;
+2. `READ_CHIP_INFO`;
+3. `READ_FLASH_ID`;
+4. `READ_FLASH_INFO`.
+
+`READ_CAPABILITY` respondeu com timeout na fase `DATA_READ` depois das quatro consultas acima terem concluído com sucesso. Por isso `0xAA` não faz parte do probe padrão. No código de referência, a leitura de capability é usada como consulta auxiliar para propriedades como acesso LBA direto e acesso aos primeiros 4 MiB, não como requisito do fluxo básico de identificação.
 
 ## Subcódigos de Test Unit Ready
 
@@ -44,6 +57,8 @@ O codec valida:
 ## Comportamento do probe físico
 
 O probe mantém uma única sessão USB enquanto as transações permanecem sincronizadas. Qualquer timeout ou falha de transporte interrompe as consultas restantes e exige reconexão antes de uma nova tentativa.
+
+O fechamento da sessão é executado em contexto não cancelável para que o cancelamento da coroutine não interrompa a liberação da interface e da conexão USB.
 
 ## Limite de integração
 
