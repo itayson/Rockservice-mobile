@@ -15,19 +15,22 @@ A interface principal já não mantém o estado operacional do diagnóstico USB.
 
 ## Arquitetura alvo
 
-Fluxo: UI → ViewModel → coordenador/caso de uso → política → porta/adaptador.
+Fluxo: UI → ViewModel → coordenador → scanner/caso de uso → política/porta/adaptador.
 
 ```mermaid
 flowchart LR
-  UI[Compose UI] --> VM[UsbDiagnosticsViewModel]
+  A[MainActivity / lifecycle] --> VM[UsbDiagnosticsViewModel]
+  A --> SCAN[core-usb AndroidUsbDiagnosticsScanner]
+  UI[Compose UI] --> VM
   VM --> COORD[core-usb UsbDiagnosticsCoordinator]
-  VM --> SCAN[core-usb AndroidUsbDiagnosticsScanner]
+  COORD --> SCAN
   COORD --> POL[Políticas de seleção]
   SCAN --> USB[AndroidUsbHostBackend]
   SCAN --> PROBE[Probe passivo Rockchip]
   USB --> API[Android USB API]
-  COORD --> MAP[Mapeamento de apresentação]
-  MAP --> UI
+  COORD --> VM
+  VM --> UI
+  UI --> MAP[Mapeamento de apresentação toUiModel]
 ```
 
 O estado e as regras passivas reutilizáveis ficam no `core-usb`. O módulo `app` traduz os snapshots para rótulos de interface e mantém apenas a coordenação de lifecycle da tela.
