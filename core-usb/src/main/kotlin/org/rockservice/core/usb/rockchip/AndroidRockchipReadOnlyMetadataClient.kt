@@ -6,6 +6,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
 internal fun interface RockchipReadOnlyTransportOpener {
@@ -80,8 +81,12 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         } finally {
             try {
                 withContext(NonCancellable) {
-                    session.close()
+                    withTimeout(CLOSE_TIMEOUT_MILLIS) {
+                        session.close()
+                    }
                 }
+            } catch (timeout: TimeoutCancellationException) {
+                Log.w(TAG, "Timed out while closing Rockchip metadata probe session.", timeout)
             } catch (error: SecurityException) {
                 Log.w(TAG, "Android denied access while closing Rockchip metadata probe session.", error)
             } catch (error: IllegalStateException) {
@@ -200,6 +205,7 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
 
     private companion object {
         const val QUERY_TIMEOUT_MILLIS = 10_000L
+        const val CLOSE_TIMEOUT_MILLIS = 2_000L
         const val MAXIMUM_ERROR_LENGTH = 240
         const val TAG = "RockchipMetadataClient"
 
