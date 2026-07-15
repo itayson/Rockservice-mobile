@@ -10,6 +10,9 @@
             android:name=".MainActivity"
             android:exported="false" />
         <activity
+            android:name=".HardwareValidationActivity"
+            android:exported="false" />
+        <activity
             android:name=".FirmwareLabActivity"
             android:exported="true">
             <intent-filter>
