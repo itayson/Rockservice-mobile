@@ -55,8 +55,14 @@ class AndroidUsbDiagnosticsScanner(
             throw cancellation
         } catch (error: Exception) {
             UsbDiagnosticsState.Error(
-                message = error.message
-                    ?: "Falha ao enumerar dispositivos USB. Reconecte o dispositivo e tente novamente.",
+                message = buildString {
+                    append("Falha ao enumerar dispositivos USB. ")
+                    append("Reconecte o dispositivo e tente novamente.")
+                    error.message?.takeIf(String::isNotBlank)?.let { detail ->
+                        append(" Detalhe: ")
+                        append(detail)
+                    }
+                },
             )
         }
 }
@@ -68,18 +74,21 @@ data class UsbDiagnosticsCoordinatorState(
 )
 
 /**
- * Serializes passive diagnostics refreshes and reconciles target selection against fresh results.
+ * Serializes passive diagnostics refreshes and target selection against one shared state snapshot.
  */
 class UsbDiagnosticsCoordinator {
-    private val refreshMutex = Mutex()
+    private val operationMutex = Mutex()
     private val _state = MutableStateFlow(UsbDiagnosticsCoordinatorState())
 
     /** Read-only state for presentation or other consumers. */
     val state: StateFlow<UsbDiagnosticsCoordinatorState> = _state.asStateFlow()
 
-    /** Runs one serialized refresh and reconciles the selected target with the new enumeration. */
+    /**
+     * Runs one serialized refresh and reconciles the selected target with the new enumeration.
+     * Any non-successful refresh clears the target because its continued presence was not revalidated.
+     */
     suspend fun refresh(scanner: UsbDiagnosticsScanner) {
-        refreshMutex.withLock {
+        operationMutex.withLock {
             val previous = _state.value
             _state.value = previous.copy(diagnostics = UsbDiagnosticsState.Loading)
 
@@ -90,7 +99,7 @@ class UsbDiagnosticsCoordinator {
                     devices = refreshed.devices.map { device -> device.descriptor },
                 )
             } else {
-                previous.selectedTransportId
+                null
             }
 
             _state.value = UsbDiagnosticsCoordinatorState(
@@ -100,19 +109,21 @@ class UsbDiagnosticsCoordinator {
         }
     }
 
-    /** Selects a uniquely enumerated target from the latest successful passive snapshot. */
-    fun selectTarget(transportId: String) {
-        val current = _state.value
-        val ready = current.diagnostics as? UsbDiagnosticsState.Ready ?: return
-        val candidate = ready.devices.singleOrNull { device ->
-            device.descriptor.transportId == transportId
-        } ?: return
+    /** Selects a uniquely enumerated target while excluding concurrent refresh state transitions. */
+    suspend fun selectTarget(transportId: String) {
+        operationMutex.withLock {
+            val current = _state.value
+            val ready = current.diagnostics as? UsbDiagnosticsState.Ready ?: return@withLock
+            val candidate = ready.devices.singleOrNull { device ->
+                device.descriptor.transportId == transportId
+            } ?: return@withLock
 
-        _state.value = current.copy(
-            selectedTransportId = UsbTargetSelectionPolicy.select(
-                candidate = candidate.descriptor,
-                devices = ready.devices.map { device -> device.descriptor },
-            ),
-        )
+            _state.value = current.copy(
+                selectedTransportId = UsbTargetSelectionPolicy.select(
+                    candidate = candidate.descriptor,
+                    devices = ready.devices.map { device -> device.descriptor },
+                ),
+            )
+        }
     }
 }
