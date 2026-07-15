@@ -22,11 +22,20 @@ import org.rockservice.core.usb.UsbHardwareValidationEvent
 import org.rockservice.core.usb.UsbHardwareValidationHostInfo
 import org.rockservice.core.usb.UsbHardwareValidationNotes
 import org.rockservice.core.usb.UsbHardwareValidationReport
+import org.rockservice.core.usb.rockchip.AndroidRockchipReadOnlyMetadataClient
+import org.rockservice.core.usb.rockchip.RockchipMetadataProbeReport
 
 internal sealed interface HardwareValidationRunState {
     data object Idle : HardwareValidationRunState
     data object Running : HardwareValidationRunState
     data class Ready(val report: UsbHardwareValidationReport) : HardwareValidationRunState
+}
+
+internal sealed interface RockchipMetadataProbeState {
+    data object Idle : RockchipMetadataProbeState
+    data object Running : RockchipMetadataProbeState
+    data class Ready(val report: RockchipMetadataProbeReport) : RockchipMetadataProbeState
+    data class Error(val message: String) : RockchipMetadataProbeState
 }
 
 internal data class HardwareValidationScreenState(
@@ -35,6 +44,7 @@ internal data class HardwareValidationScreenState(
     val otgAdapter: String = "",
     val events: List<UsbHardwareValidationEvent> = emptyList(),
     val runState: HardwareValidationRunState = HardwareValidationRunState.Idle,
+    val metadataProbeState: RockchipMetadataProbeState = RockchipMetadataProbeState.Idle,
     val exportMessage: String? = null,
 )
 
@@ -42,53 +52,51 @@ internal data class HardwareValidationScreenState(
 internal class HardwareValidationViewModel : ViewModel() {
     private val mutableState = MutableStateFlow(HardwareValidationScreenState())
     private var validationJob: Job? = null
+    private var metadataProbeJob: Job? = null
     private var exportJob: Job? = null
     private var validationGeneration: Long = 0L
+    private var metadataProbeGeneration: Long = 0L
 
     val state = mutableState.asStateFlow()
 
-    /** Updates the operator-provided board or device model with a bounded value. */
     fun setBoardOrDeviceModel(value: String) {
         mutableState.value = mutableState.value.copy(boardOrDeviceModel = value.take(MAXIMUM_NOTE_LENGTH))
     }
 
-    /** Updates the optional known SoC label with a bounded value. */
     fun setKnownSoc(value: String) {
         mutableState.value = mutableState.value.copy(knownSoc = value.take(MAXIMUM_NOTE_LENGTH))
     }
 
-    /** Updates the OTG cable or adapter description with a bounded value. */
     fun setOtgAdapter(value: String) {
         mutableState.value = mutableState.value.copy(otgAdapter = value.take(MAXIMUM_NOTE_LENGTH))
     }
 
-    /** Records only attach/detach kind and timestamp; transport path hints are deliberately discarded. */
     fun recordAttachmentEvent(kind: UsbAttachmentEventKind) {
         val event = UsbHardwareValidationEvent(
             kind = kind,
             timestampEpochMillis = System.currentTimeMillis(),
         )
+        metadataProbeJob?.cancel()
+        metadataProbeGeneration += 1L
         mutableState.value = mutableState.value.copy(
             events = (mutableState.value.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
+            metadataProbeState = RockchipMetadataProbeState.Idle,
         )
     }
 
-    /**
-     * Runs the bounded Android USB descriptor read used by hardware gate #18.
-     *
-     * The backend revalidates identity, requests permission when required and opens the connection,
-     * but it does not claim an interface or send an endpoint/Rockchip command.
-     */
     fun runValidation(
         hostInfo: UsbHardwareValidationHostInfo,
         snapshot: UsbDiagnosticsDeviceSnapshot,
         backend: AndroidUsbHostBackend,
     ) {
         validationJob?.cancel()
+        metadataProbeJob?.cancel()
+        metadataProbeGeneration += 1L
         val generation = ++validationGeneration
         val stateAtStart = mutableState.value
         mutableState.value = stateAtStart.copy(
             runState = HardwareValidationRunState.Running,
+            metadataProbeState = RockchipMetadataProbeState.Idle,
             exportMessage = null,
         )
         validationJob = viewModelScope.launch(Dispatchers.IO) {
@@ -140,13 +148,37 @@ internal class HardwareValidationViewModel : ViewModel() {
                 descriptorCheck = check,
                 events = latest.events,
             )
-            mutableState.value = latest.copy(
-                runState = HardwareValidationRunState.Ready(report),
-            )
+            mutableState.value = latest.copy(runState = HardwareValidationRunState.Ready(report))
         }
     }
 
-    /** Writes the latest sanitized validation report to a destination selected by the user. */
+    /** Runs allowlisted Rockchip metadata commands only after the passive validation succeeded. */
+    fun runMetadataProbe(
+        snapshot: UsbDiagnosticsDeviceSnapshot,
+        client: AndroidRockchipReadOnlyMetadataClient,
+    ) {
+        val validation = mutableState.value.runState as? HardwareValidationRunState.Ready ?: return
+        if (!validation.report.descriptorCheck.succeeded) return
+
+        metadataProbeJob?.cancel()
+        val generation = ++metadataProbeGeneration
+        mutableState.value = mutableState.value.copy(metadataProbeState = RockchipMetadataProbeState.Running)
+        metadataProbeJob = viewModelScope.launch(Dispatchers.IO) {
+            val nextState = try {
+                RockchipMetadataProbeState.Ready(client.probe(snapshot.descriptor))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: RuntimeException) {
+                RockchipMetadataProbeState.Error(
+                    error.message?.take(MAXIMUM_PROBE_ERROR_LENGTH)?.ifBlank { null }
+                        ?: "Falha inesperada ${error.javaClass.simpleName} no probe de metadados.",
+                )
+            }
+            if (generation != metadataProbeGeneration) return@launch
+            mutableState.value = mutableState.value.copy(metadataProbeState = nextState)
+        }
+    }
+
     fun exportReport(contentResolver: ContentResolver, uri: Uri) {
         val report = (mutableState.value.runState as? HardwareValidationRunState.Ready)?.report ?: return
         exportJob?.cancel()
@@ -154,12 +186,8 @@ internal class HardwareValidationViewModel : ViewModel() {
             try {
                 val output = contentResolver.openOutputStream(uri, "wt")
                     ?: throw IOException("O destino selecionado nao pode ser aberto.")
-                output.bufferedWriter(Charsets.UTF_8).use { writer ->
-                    writer.write(report.toPlainText())
-                }
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = "Relatorio de validacao exportado.",
-                )
+                output.bufferedWriter(Charsets.UTF_8).use { writer -> writer.write(report.toPlainText()) }
+                mutableState.value = mutableState.value.copy(exportMessage = "Relatorio de validacao exportado.")
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: SecurityException) {
@@ -176,7 +204,9 @@ internal class HardwareValidationViewModel : ViewModel() {
 
     override fun onCleared() {
         validationGeneration += 1L
+        metadataProbeGeneration += 1L
         validationJob?.cancel()
+        metadataProbeJob?.cancel()
         exportJob?.cancel()
         super.onCleared()
     }
@@ -199,5 +229,6 @@ internal class HardwareValidationViewModel : ViewModel() {
         const val VALIDATION_TIMEOUT_MILLIS = 8_000L
         const val MAXIMUM_NOTE_LENGTH = 200
         const val MAXIMUM_RECORDED_EVENTS = 100
+        const val MAXIMUM_PROBE_ERROR_LENGTH = 240
     }
 }
