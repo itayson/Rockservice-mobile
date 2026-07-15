@@ -1,0 +1,64 @@
+name: Generate trusted Gradle wrapper
+
+on:
+  pull_request_target:
+    types: [ready_for_review, reopened]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  generate-wrapper:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feat/bootstrap-foundation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up trusted Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Generate wrapper outside the pull request checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/rockservice-wrapper
+          printf 'rootProject.name = "wrapper-generator"\n' > /tmp/rockservice-wrapper/settings.gradle.kts
+          cd /tmp/rockservice-wrapper
+          gradle wrapper --gradle-version 8.13 --distribution-type bin
+          test -s gradle/wrapper/gradle-wrapper.jar
+          sha256sum gradle/wrapper/gradle-wrapper.jar
+
+      - name: Check out the controlled branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/bootstrap-foundation
+          fetch-depth: 0
+          path: repository
+
+      - name: Commit generated wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp /tmp/rockservice-wrapper/gradlew repository/gradlew
+          cp /tmp/rockservice-wrapper/gradlew.bat repository/gradlew.bat
+          mkdir -p repository/gradle/wrapper
+          cp /tmp/rockservice-wrapper/gradle/wrapper/gradle-wrapper.jar repository/gradle/wrapper/gradle-wrapper.jar
+          cp /tmp/rockservice-wrapper/gradle/wrapper/gradle-wrapper.properties repository/gradle/wrapper/gradle-wrapper.properties
+          cd repository
+          chmod +x gradlew
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
+          git diff --cached --quiet && exit 0
+          git commit -m "build: add trusted Gradle wrapper 8.13"
+          git push origin HEAD:feat/bootstrap-foundation
