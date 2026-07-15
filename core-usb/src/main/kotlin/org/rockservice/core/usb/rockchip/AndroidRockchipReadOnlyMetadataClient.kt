@@ -3,7 +3,9 @@ package org.rockservice.core.usb.rockchip
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withContext
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
 internal fun interface RockchipReadOnlyTransportOpener {
@@ -32,6 +34,10 @@ data class RockchipMetadataProbeReport(
  * A probe keeps one validated transport session while transactions are healthy. Any USB/protocol
  * failure stops the remaining commands because the device phase can no longer be assumed to be
  * synchronized. The caller can then require a physical reconnect before another active probe.
+ *
+ * The baseline probe contains only commands that completed successfully on the validated physical
+ * 2207:320B target. Optional protocol capabilities remain in the codec but are not transmitted by
+ * this default hardware-validation path until a compatible device profile is demonstrated.
  */
 class AndroidRockchipReadOnlyMetadataClient internal constructor(
     private val opener: RockchipReadOnlyTransportOpener,
@@ -73,7 +79,9 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
             }
         } finally {
             try {
-                session.close()
+                withContext(NonCancellable) {
+                    session.close()
+                }
             } catch (error: SecurityException) {
                 Log.w(TAG, "Android denied access while closing Rockchip metadata probe session.", error)
             } catch (error: IllegalStateException) {
@@ -172,9 +180,6 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         QuerySpec("READ_FLASH_INFO", RockchipReadOnlyOperation.READ_FLASH_INFO) { data ->
             val parsed = RockchipMetadataParsers.parseFlashInfo(data)
             "totalSectors=${parsed.totalSectors}, responseBytes=${parsed.rawResponseLength}"
-        },
-        QuerySpec("READ_CAPABILITY", RockchipReadOnlyOperation.READ_CAPABILITY) { data ->
-            RockchipMetadataParsers.parseCapability(data).rawHex
         },
     )
 
