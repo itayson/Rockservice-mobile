@@ -50,25 +50,13 @@ jobs:
       - uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           languages: "${{ matrix.language }}"
-          debug: true
-          debug-artifact-name: "codeql-debug-${{ matrix.language }}"
-          debug-database-name: "${{ matrix.language }}"
 
-      - name: Build Android and native modules
+      - name: Build Android and native modules for CodeQL
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleDebug :native-rockchip:assembleDebug :native-image-tools:assembleDebug
+          ./gradlew --no-daemon --no-build-cache --rerun-tasks clean :app:assembleDebug :native-rockchip:assembleDebug :native-image-tools:assembleDebug
 
-      - name: Generate CodeQL SARIF
-        uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
+      - uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           category: "/language:${{ matrix.language }}"
-          output: "../results-${{ matrix.language }}"
-          upload: never
           upload-database: false
-
-      - name: Upload CodeQL SARIF
-        uses: github/codeql-action/upload-sarif@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
-        with:
-          sarif_file: "../results-${{ matrix.language }}"
-          category: "/language:${{ matrix.language }}"
