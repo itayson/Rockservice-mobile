@@ -5,7 +5,7 @@ import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,7 +13,7 @@ import org.rockservice.core.usb.UsbDeviceDescriptor
 
 class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
     @Test
-    fun `blocking close keeps probe slot reserved until the worker exits`() = runTest {
+    fun `blocking close keeps probe slot reserved until the worker exits`() = runBlocking {
         val transport = IgnoringInterruptCloseTransport()
         val firstClient = AndroidRockchipReadOnlyMetadataClient(
             opener = RockchipReadOnlyTransportOpener { transport },
