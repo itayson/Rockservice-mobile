@@ -9,10 +9,12 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
@@ -54,7 +56,9 @@ internal class AndroidAdbUsbTransport(
                 check(!closed.get()) { "ADB USB transport is closed." }
                 currentCoroutineContext().ensureActive()
                 val frame = AdbProtocolCodec.encode(message)
-                io.writeExactly(frame, ioTimeout(timeoutMillis))
+                withContext(Dispatchers.IO) {
+                    io.writeExactly(frame, ioTimeout(timeoutMillis))
+                }
                 currentCoroutineContext().ensureActive()
             }
         }
@@ -71,13 +75,17 @@ internal class AndroidAdbUsbTransport(
                 val ioTimeout = ioTimeout(timeoutMillis)
                 currentCoroutineContext().ensureActive()
 
-                val headerBytes = io.readExactly(AdbProtocolCodec.HEADER_SIZE_BYTES, ioTimeout)
+                val headerBytes = withContext(Dispatchers.IO) {
+                    io.readExactly(AdbProtocolCodec.HEADER_SIZE_BYTES, ioTimeout)
+                }
                 val header = AdbProtocolCodec.decodeHeader(headerBytes)
                 currentCoroutineContext().ensureActive()
                 val payload = if (header.dataLength == 0) {
                     ByteArray(0)
                 } else {
-                    io.readExactly(header.dataLength, ioTimeout)
+                    withContext(Dispatchers.IO) {
+                        io.readExactly(header.dataLength, ioTimeout)
+                    }
                 }
                 currentCoroutineContext().ensureActive()
                 AdbProtocolCodec.decodePayload(header, payload, requireChecksum)
@@ -90,7 +98,9 @@ internal class AndroidAdbUsbTransport(
             if (!closed.compareAndSet(false, true)) return@withLock
             sendMutex.withLock {
                 receiveMutex.withLock {
-                    io.close()
+                    withContext(Dispatchers.IO) {
+                        io.close()
+                    }
                 }
             }
         }
