@@ -187,6 +187,9 @@ class AndroidSparseImageExpander(
                 }
 
                 AndroidSparseChunkType.CRC32 -> {
+                    require(outputBlockCount == 0L) {
+                        "Chunk CRC32 #$index deve declarar zero blocos de saída."
+                    }
                     require(inputPayloadSize == UINT32_SIZE.toLong()) {
                         "Chunk CRC32 #$index deve conter exatamente $UINT32_SIZE bytes de payload."
                     }
