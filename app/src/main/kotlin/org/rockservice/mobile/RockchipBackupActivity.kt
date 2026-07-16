@@ -112,6 +112,16 @@ class RockchipBackupActivity : ComponentActivity() {
                         )
                     }
                 }
+                val exportManifest = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("text/plain"),
+                ) { uri ->
+                    uri?.let { destination ->
+                        backupViewModel.exportManifest(
+                            contentResolver = applicationContext.contentResolver,
+                            destination = destination,
+                        )
+                    }
+                }
 
                 fun invalidateTargetGate() {
                     probeJob?.cancel()
@@ -265,6 +275,19 @@ class RockchipBackupActivity : ComponentActivity() {
                                         Text("Backup concluído", style = MaterialTheme.typography.titleMedium)
                                         Text("Bytes: ${state.result.byteCount}")
                                         Text("SHA-256: ${state.result.sha256}")
+                                        Button(
+                                            onClick = {
+                                                exportManifest.launch(
+                                                    "rockchip-lba-${state.result.startSector}-${state.result.sectorCount}-sectors.manifest.txt",
+                                                )
+                                            },
+                                            enabled = !state.manifestExportRunning,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text("Exportar manifesto de integridade")
+                                        }
+                                        if (state.manifestExportRunning) CircularProgressIndicator()
+                                        state.manifestExportMessage?.let { message -> Text(message) }
                                     }
                                 }
                             }
