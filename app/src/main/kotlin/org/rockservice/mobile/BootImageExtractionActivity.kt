@@ -34,7 +34,7 @@ import org.rockservice.feature.firmware.AndroidBootSectionType
 
 /** Explicit export screen for one analyzed Android Boot Image source. */
 class BootImageExtractionActivity : ComponentActivity() {
-    private lateinit var viewModel: BootImageExtractionViewModel
+    private var viewModel: BootImageExtractionViewModel? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,11 +44,28 @@ class BootImageExtractionActivity : ComponentActivity() {
         val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME)?.take(MAXIMUM_DISPLAY_NAME_LENGTH)
             ?: "boot.img"
         if (sourceUri == null || expectedSourceSha256.isNullOrBlank()) {
-            finish()
+            setContent {
+                MaterialTheme {
+                    Scaffold { padding ->
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Text("Extracao Android Boot Image", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                "A referencia da Boot Image ou o SHA-256 esperado esta ausente. Volte ao Laboratorio de Firmware, selecione a imagem e execute a analise novamente antes de abrir a extracao.",
+                            )
+                            Button(onClick = { finish() }) {
+                                Text("Voltar ao Laboratorio")
+                            }
+                        }
+                    }
+                }
+            }
             return
         }
 
-        viewModel = ViewModelProvider(
+        val resolvedViewModel = ViewModelProvider(
             this,
             BootImageExtractionViewModelFactory(
                 sourceUri = sourceUri,
@@ -56,10 +73,11 @@ class BootImageExtractionActivity : ComponentActivity() {
                 contentResolver = applicationContext.contentResolver,
             ),
         )[BootImageExtractionViewModel::class.java]
+        viewModel = resolvedViewModel
 
         setContent {
             MaterialTheme {
-                val state by viewModel.state.collectAsState()
+                val state by resolvedViewModel.state.collectAsState()
                 var pendingSectionName by rememberSaveable { mutableStateOf<String?>(null) }
                 val createDestination = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
@@ -69,7 +87,7 @@ class BootImageExtractionActivity : ComponentActivity() {
                     }
                     pendingSectionName = null
                     if (destinationUri != null && sectionType != null) {
-                        viewModel.extract(sectionType, destinationUri)
+                        resolvedViewModel.extract(sectionType, destinationUri)
                     }
                 }
                 val extractionRunning = state.extraction is BootSectionExtractionState.Extracting
