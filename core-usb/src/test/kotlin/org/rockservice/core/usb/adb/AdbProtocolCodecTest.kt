@@ -11,9 +11,10 @@ import org.junit.Test
 
 class AdbProtocolCodecTest {
     @Test
-    fun `connect frame uses expected CNXN wire fields and round trips`() {
+    fun `connect frame uses expected CNXN wire fields and modern non terminated banner`() {
+        val banner = "host::features=shell_v2;"
         val message = AdbProtocolCodec.connect(
-            banner = "host::features=shell_v2;",
+            banner = banner,
             protocolVersion = 0x01000001,
             maxDataBytes = 4096,
         )
@@ -27,6 +28,8 @@ class AdbProtocolCodecTest {
         assertEquals(4096, buffer.getInt(8))
         assertEquals(message.payload.size, buffer.getInt(12))
         assertEquals(0xB1A7B1BC.toInt(), buffer.getInt(20))
+        assertArrayEquals(banner.toByteArray(), message.payload)
+        assertNotEquals(0, message.payload.last().toInt())
         assertEquals(message, decoded)
     }
 
@@ -198,13 +201,13 @@ class AdbProtocolCodecTest {
     }
 
     @Test
-    fun `null terminated builders reject blank nul and oversized strings`() {
+    fun `string builders reject blank nul and oversized strings`() {
         expectIllegalArgument { AdbProtocolCodec.connect("   ") }
         expectIllegalArgument { AdbProtocolCodec.connect("host::bad\u0000banner") }
         expectIllegalArgument { AdbProtocolCodec.open(1, "") }
         expectIllegalArgument { AdbProtocolCodec.open(1, "shell:\u0000id") }
         expectIllegalArgument {
-            AdbProtocolCodec.connect("x".repeat(AdbProtocolCodec.MAXIMUM_PAYLOAD_BYTES))
+            AdbProtocolCodec.connect("x".repeat(AdbProtocolCodec.MAXIMUM_HANDSHAKE_PAYLOAD_BYTES + 1))
         }
     }
 
