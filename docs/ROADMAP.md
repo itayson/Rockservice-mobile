@@ -81,6 +81,7 @@ Entregue:
 - probe conservador por VID/topologia;
 - seleção de alvo e monitoramento attach/detach;
 - codec CBW/CSW com allowlist de consultas de metadados;
+- parsers defensivos de chip, flash e storage;
 - transporte Android Rockchip real somente leitura com sessão serializada e fechamento controlado;
 - baseline ativo validado em hardware autorizado com `TEST_UNIT_READY`, `READ_CHIP_INFO`, `READ_FLASH_ID` e `READ_FLASH_INFO`;
 - tratamento fail-closed para timeout, perda de sincronização e necessidade de reconexão;
