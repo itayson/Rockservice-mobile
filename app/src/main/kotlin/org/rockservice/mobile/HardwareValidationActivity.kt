@@ -43,6 +43,7 @@ import kotlinx.coroutines.withContext
 import org.rockservice.core.usb.AndroidUsbAttachmentMonitor
 import org.rockservice.core.usb.AndroidUsbDiagnosticsScanner
 import org.rockservice.core.usb.AndroidUsbHostBackend
+import org.rockservice.core.usb.UsbAttachmentEventKind
 import org.rockservice.core.usb.UsbDiagnosticsScanner
 import org.rockservice.core.usb.UsbDiagnosticsState
 import org.rockservice.core.usb.UsbHardwareValidationHostInfo
@@ -83,6 +84,7 @@ class HardwareValidationActivity : ComponentActivity() {
                 var lbaRunning by remember { mutableStateOf(false) }
                 var lbaReport by remember { mutableStateOf<RockchipBoundedLbaProbeReport?>(null) }
                 var lbaError by remember { mutableStateOf<String?>(null) }
+                var retryBlockedUntilAttachment by remember { mutableStateOf(false) }
                 val hostInfo = remember {
                     UsbHardwareValidationHostInfo(
                         manufacturer = Build.MANUFACTURER.orEmpty(),
@@ -108,7 +110,19 @@ class HardwareValidationActivity : ComponentActivity() {
                     lbaError = null
                 }
 
-                LaunchedEffect(usbState.selectedTransportId, validationState.metadataProbeState) {
+                LaunchedEffect(usbState.selectedTransportId) {
+                    retryBlockedUntilAttachment = false
+                    clearBoundedReadState()
+                }
+
+                LaunchedEffect(validationState.events.lastOrNull()) {
+                    if (validationState.events.lastOrNull()?.kind == UsbAttachmentEventKind.ATTACHED) {
+                        retryBlockedUntilAttachment = false
+                        clearBoundedReadState()
+                    }
+                }
+
+                LaunchedEffect(validationState.metadataProbeState) {
                     if (validationState.metadataProbeState !is RockchipMetadataProbeState.Ready) {
                         clearBoundedReadState()
                     }
@@ -340,6 +354,9 @@ class HardwareValidationActivity : ComponentActivity() {
                                             Text(
                                                 "Proxima prova: leitura fixa de 1 setor (512 bytes) em LBA 0. O conteudo nao e salvo automaticamente.",
                                             )
+                                            if (retryBlockedUntilAttachment) {
+                                                Text("Nova leitura bloqueada ate uma reconexao USB ou troca efetiva do alvo.")
+                                            }
                                             Button(
                                                 onClick = {
                                                     lbaJob?.cancel()
@@ -355,25 +372,31 @@ class HardwareValidationActivity : ComponentActivity() {
                                                             }
                                                             if (generation == lbaGeneration) {
                                                                 lbaReport = report
+                                                                retryBlockedUntilAttachment =
+                                                                    !report.succeeded || report.requiresReconnect
                                                             }
                                                         } catch (cancelled: CancellationException) {
                                                             throw cancelled
                                                         } catch (error: SecurityException) {
                                                             if (generation == lbaGeneration) {
+                                                                retryBlockedUntilAttachment = true
                                                                 lbaError = "O Android negou acesso USB: ${error.message ?: "sem detalhe"}. Reconecte o dispositivo e tente novamente."
                                                             }
                                                         } catch (error: IllegalArgumentException) {
                                                             if (generation == lbaGeneration) {
+                                                                retryBlockedUntilAttachment = true
                                                                 lbaError = error.message
                                                                     ?: "O alvo USB mudou ou deixou de estar conectado. Reconecte o dispositivo e tente novamente."
                                                             }
                                                         } catch (error: IllegalStateException) {
                                                             if (generation == lbaGeneration) {
+                                                                retryBlockedUntilAttachment = true
                                                                 lbaError = error.message
                                                                     ?: "A permissao USB foi negada ou a conexao nao pode ser aberta. Reconecte o dispositivo e tente novamente."
                                                             }
                                                         } catch (error: IOException) {
                                                             if (generation == lbaGeneration) {
+                                                                retryBlockedUntilAttachment = true
                                                                 lbaError = error.message
                                                                     ?: "Falha de entrada/saida durante a leitura limitada. Reconecte o dispositivo e tente novamente."
                                                             }
@@ -384,7 +407,7 @@ class HardwareValidationActivity : ComponentActivity() {
                                                         }
                                                     }
                                                 },
-                                                enabled = !lbaRunning && lbaReport?.requiresReconnect != true,
+                                                enabled = !lbaRunning && !retryBlockedUntilAttachment,
                                                 modifier = Modifier.fillMaxWidth(),
                                             ) {
                                                 Text("Testar leitura limitada de 1 setor (LBA 0)")
