@@ -8,6 +8,7 @@ import java.security.MessageDigest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -46,6 +47,88 @@ class AndroidSparseSuperMetadataParserTest {
     }
 
     @Test
+    fun `rejects truncated sparse super when primary geometry magic is present`() {
+        val raw = ByteArrayOutputStream().also { output ->
+            output.write(ByteArray(4096))
+            output.write(geometryBlock(metadataMaxSize = 4096))
+        }.toByteArray()
+        val sparse = sparseRawImage(raw, blockSize = 4096)
+
+        val error = expectIllegalArgument {
+            AndroidSparseSuperMetadataParser().parseIfPresent {
+                ByteArrayInputStream(sparse)
+            }
+        }
+
+        assertTrue(error.message.orEmpty().contains("área de descoberta", ignoreCase = true))
+    }
+
+    @Test
+    fun `rejects truncated sparse super when only backup geometry magic is present`() {
+        val raw = ByteArray(8196)
+        ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).putInt(8192, 0x616C4467)
+        val sparse = sparseRawImage(raw, blockSize = 4)
+
+        val error = expectIllegalArgument {
+            AndroidSparseSuperMetadataParser().parseIfPresent {
+                ByteArrayInputStream(sparse)
+            }
+        }
+
+        assertTrue(error.message.orEmpty().contains("área de descoberta", ignoreCase = true))
+    }
+
+    @Test
+    fun `ignores corrupt geometry copy when planning bounded metadata prefix`() {
+        val corruptPrimary = geometryBlock(metadataMaxSize = 8192).also { geometry ->
+            geometry[8] = (geometry[8].toInt() xor 0x01).toByte()
+        }
+        val validBackup = geometryBlock(metadataMaxSize = 4096)
+        val rawSuper = minimalRawSuperImage(
+            metadataMaxSize = 4096,
+            primaryGeometry = corruptPrimary,
+            backupGeometry = validBackup,
+        )
+        val sparseSuper = sparseRawImage(rawSuper, blockSize = 4096)
+
+        val metadata = AndroidSparseSuperMetadataParser(
+            maximumDecodedPrefixBytes = 16 * 1024,
+        ).parseIfPresent {
+            ByteArrayInputStream(sparseSuper)
+        }
+
+        assertNotNull(metadata)
+        requireNotNull(metadata)
+        assertEquals(4096L, metadata.geometry.metadataMaxSizeBytes)
+        assertEquals(AndroidSuperGeometrySource.BACKUP, metadata.geometry.source)
+    }
+
+    @Test
+    fun `ignores malformed primary geometry struct size and uses valid backup`() {
+        val malformedPrimary = geometryBlock(metadataMaxSize = 8192).also { geometry ->
+            ByteBuffer.wrap(geometry).order(ByteOrder.LITTLE_ENDIAN).putInt(4, 48)
+        }
+        val validBackup = geometryBlock(metadataMaxSize = 4096)
+        val rawSuper = minimalRawSuperImage(
+            metadataMaxSize = 4096,
+            primaryGeometry = malformedPrimary,
+            backupGeometry = validBackup,
+        )
+        val sparseSuper = sparseRawImage(rawSuper, blockSize = 4096)
+
+        val metadata = AndroidSparseSuperMetadataParser(
+            maximumDecodedPrefixBytes = 16 * 1024,
+        ).parseIfPresent {
+            ByteArrayInputStream(sparseSuper)
+        }
+
+        assertNotNull(metadata)
+        requireNotNull(metadata)
+        assertEquals(4096L, metadata.geometry.metadataMaxSizeBytes)
+        assertEquals(AndroidSuperGeometrySource.BACKUP, metadata.geometry.source)
+    }
+
+    @Test
     fun `rejects sparse super when required decoded prefix exceeds configured limit`() {
         val rawSuper = minimalRawSuperImage(metadataMaxSize = 4096)
         val sparseSuper = sparseRawImage(rawSuper, blockSize = 4096)
@@ -74,14 +157,22 @@ class AndroidSparseSuperMetadataParserTest {
         }
     }
 
-    private fun minimalRawSuperImage(metadataMaxSize: Int): ByteArray {
+    private fun minimalRawSuperImage(
+        metadataMaxSize: Int,
+        primaryGeometry: ByteArray? = null,
+        backupGeometry: ByteArray? = null,
+    ): ByteArray {
+        require(metadataMaxSize >= 192) {
+            "metadataMaxSize deve comportar o cabeçalho e a tabela de block devices."
+        }
         require(metadataMaxSize % 512 == 0)
-        val geometry = geometryBlock(metadataMaxSize)
+        val primary = primaryGeometry ?: geometryBlock(metadataMaxSize)
+        val backup = backupGeometry ?: geometryBlock(metadataMaxSize)
         val metadata = metadataSlot(metadataMaxSize)
         return ByteArrayOutputStream().also { output ->
             output.write(ByteArray(4096))
-            output.write(geometry)
-            output.write(geometry)
+            output.write(primary)
+            output.write(backup)
             output.write(metadata)
         }.toByteArray()
     }
@@ -102,28 +193,19 @@ class AndroidSparseSuperMetadataParserTest {
     }
 
     private fun metadataSlot(metadataMaxSize: Int): ByteArray {
-        val blockDeviceTable = ByteArray(64)
-        ByteBuffer.wrap(blockDeviceTable).order(ByteOrder.LITTLE_ENDIAN).apply {
-            putLong(0, 40L)
-            putInt(8, 4096)
-            putInt(12, 0)
-            putLong(16, 64L * 1024 * 1024)
-            "super".toByteArray(Charsets.US_ASCII).copyInto(blockDeviceTable, destinationOffset = 24)
-            putInt(60, 0)
-        }
-
+        val tables = blockDeviceTable(metadataMaxSize)
         val header = ByteArray(128)
         val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
         buffer.putInt(0, 0x414C5030)
         buffer.putShort(4, 10)
         buffer.putShort(6, 0)
         buffer.putInt(8, 128)
-        buffer.putInt(44, blockDeviceTable.size)
-        sha256(blockDeviceTable).copyInto(header, destinationOffset = 48)
-        putTableDescriptor(header, offset = 80, entryOffset = 0, entryCount = 0, entrySize = 52)
-        putTableDescriptor(header, offset = 92, entryOffset = 0, entryCount = 0, entrySize = 24)
-        putTableDescriptor(header, offset = 104, entryOffset = 0, entryCount = 0, entrySize = 48)
-        putTableDescriptor(header, offset = 116, entryOffset = 0, entryCount = 1, entrySize = 64)
+        buffer.putInt(44, tables.size)
+        sha256(tables).copyInto(header, destinationOffset = 48)
+        putTableDescriptor(header, offset = 80, entryCount = 0, entrySize = 52)
+        putTableDescriptor(header, offset = 92, entryCount = 0, entrySize = 24)
+        putTableDescriptor(header, offset = 104, entryCount = 0, entrySize = 48)
+        putTableDescriptor(header, offset = 116, entryCount = 1, entrySize = 64)
 
         val headerForChecksum = header.copyOf()
         headerForChecksum.fill(0, fromIndex = 12, toIndex = 44)
@@ -131,19 +213,31 @@ class AndroidSparseSuperMetadataParserTest {
 
         return ByteArray(metadataMaxSize).also { slot ->
             header.copyInto(slot)
-            blockDeviceTable.copyInto(slot, destinationOffset = header.size)
+            tables.copyInto(slot, destinationOffset = header.size)
         }
+    }
+
+    private fun blockDeviceTable(metadataMaxSize: Int): ByteArray {
+        val table = ByteArray(64)
+        val buffer = ByteBuffer.wrap(table).order(ByteOrder.LITTLE_ENDIAN)
+        val metadataAreaBytes = 4096L + (2L * 4096L) + (2L * metadataMaxSize)
+        buffer.putLong(0, metadataAreaBytes / 512L)
+        buffer.putInt(8, 4096)
+        buffer.putInt(12, 0)
+        buffer.putLong(16, 1024L * 1024L)
+        "super".toByteArray(Charsets.US_ASCII).copyInto(table, destinationOffset = 24)
+        buffer.putInt(60, 0)
+        return table
     }
 
     private fun putTableDescriptor(
         bytes: ByteArray,
         offset: Int,
-        entryOffset: Int,
         entryCount: Int,
         entrySize: Int,
     ) {
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putInt(offset, entryOffset)
+        buffer.putInt(offset, 0)
         buffer.putInt(offset + 4, entryCount)
         buffer.putInt(offset + 8, entrySize)
     }

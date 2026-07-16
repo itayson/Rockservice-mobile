@@ -2,6 +2,7 @@ package org.rockservice.feature.firmware
 
 import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.security.MessageDigest
 
 /**
  * Bridges Android Sparse input to the existing raw liblp parser using only a bounded decoded prefix.
@@ -35,7 +36,13 @@ class AndroidSparseSuperMetadataParser(
      */
     fun parseIfPresent(openSource: () -> InputStream): AndroidSuperMetadata? {
         val sparseMetadata = openSource().use(sparseParser::parse)
-        if (sparseMetadata.expandedSizeBytes < GEOMETRY_DISCOVERY_BYTES.toLong()) return null
+        if (sparseMetadata.expandedSizeBytes < GEOMETRY_DISCOVERY_BYTES.toLong()) {
+            rejectTruncatedSuperIfGeometryMagicIsPresent(
+                openSource = openSource,
+                expandedSizeBytes = sparseMetadata.expandedSizeBytes,
+            )
+            return null
+        }
 
         val discoveryPrefix = openSource().use { source ->
             prefixDecoder.decodeExactly(source, GEOMETRY_DISCOVERY_BYTES)
@@ -68,6 +75,23 @@ class AndroidSparseSuperMetadataParser(
         return rawParser.parse(ByteArrayInputStream(rawPrefix))
     }
 
+    private fun rejectTruncatedSuperIfGeometryMagicIsPresent(
+        openSource: () -> InputStream,
+        expandedSizeBytes: Long,
+    ) {
+        if (expandedSizeBytes < PRIMARY_GEOMETRY_OFFSET + UINT32_BYTES) return
+
+        val availableBytes = expandedSizeBytes.toInt()
+        val prefix = openSource().use { source -> prefixDecoder.decodeExactly(source, availableBytes) }
+        val containsGeometryMagic =
+            hasGeometryMagicAt(prefix, PRIMARY_GEOMETRY_OFFSET) ||
+                hasGeometryMagicAt(prefix, BACKUP_GEOMETRY_OFFSET)
+        require(!containsGeometryMagic) {
+            "Imagem sparse contém assinatura de geometria liblp, mas termina antes dos " +
+                "$GEOMETRY_DISCOVERY_BYTES bytes obrigatórios da área de descoberta."
+        }
+    }
+
     private fun discoverMetadataMaxSize(prefix: ByteArray): Long? {
         require(prefix.size >= GEOMETRY_DISCOVERY_BYTES) {
             "Prefixo raw insuficiente para descobrir geometria liblp."
@@ -82,7 +106,7 @@ class AndroidSparseSuperMetadataParser(
 
         val plausibleSizes = candidates.mapNotNull(GeometryCandidate::metadataMaxSize)
         require(plausibleSizes.isNotEmpty()) {
-            "Geometria liblp encontrada, mas metadata_max_size/slot_count/logical_block_size são inválidos."
+            "Geometria liblp encontrada, mas checksum/campos de geometria são inválidos."
         }
         return plausibleSizes.max()
     }
@@ -92,11 +116,27 @@ class AndroidSparseSuperMetadataParser(
         if (magic != GEOMETRY_MAGIC) return GeometryCandidate(hasMagic = false, metadataMaxSize = null)
 
         val structSize = bytes.readUInt32Le(offset + GEOMETRY_STRUCT_SIZE_OFFSET)
+        if (structSize != GEOMETRY_STRUCT_SIZE.toLong()) {
+            return GeometryCandidate(hasMagic = true, metadataMaxSize = null)
+        }
+
+        val struct = bytes.copyOfRange(offset, offset + GEOMETRY_STRUCT_SIZE)
+        val expectedChecksum = struct.copyOfRange(
+            GEOMETRY_CHECKSUM_OFFSET,
+            GEOMETRY_CHECKSUM_OFFSET + SHA256_SIZE,
+        )
+        struct.fill(
+            0,
+            fromIndex = GEOMETRY_CHECKSUM_OFFSET,
+            toIndex = GEOMETRY_CHECKSUM_OFFSET + SHA256_SIZE,
+        )
+        val checksumValid = sha256(struct).contentEquals(expectedChecksum)
+
         val metadataMaxSize = bytes.readUInt32Le(offset + GEOMETRY_METADATA_MAX_SIZE_OFFSET)
         val metadataSlotCount = bytes.readUInt32Le(offset + GEOMETRY_SLOT_COUNT_OFFSET)
         val logicalBlockSize = bytes.readUInt32Le(offset + GEOMETRY_LOGICAL_BLOCK_SIZE_OFFSET)
         val plausible =
-            structSize == GEOMETRY_STRUCT_SIZE.toLong() &&
+            checksumValid &&
                 metadataMaxSize > 0L &&
                 metadataMaxSize % METADATA_ALIGNMENT_BYTES == 0L &&
                 metadataSlotCount in 1L..MAXIMUM_METADATA_SLOTS.toLong() &&
@@ -108,6 +148,9 @@ class AndroidSparseSuperMetadataParser(
             metadataMaxSize = metadataMaxSize.takeIf { plausible },
         )
     }
+
+    private fun hasGeometryMagicAt(bytes: ByteArray, offset: Int): Boolean =
+        offset >= 0 && offset + UINT32_BYTES <= bytes.size && bytes.readUInt32Le(offset) == GEOMETRY_MAGIC
 
     private data class GeometryCandidate(
         val hasMagic: Boolean,
@@ -123,9 +166,12 @@ class AndroidSparseSuperMetadataParser(
         const val GEOMETRY_MAGIC: Long = 0x616C4467L
         const val GEOMETRY_STRUCT_SIZE = 52
         const val GEOMETRY_STRUCT_SIZE_OFFSET = 4
+        const val GEOMETRY_CHECKSUM_OFFSET = 8
         const val GEOMETRY_METADATA_MAX_SIZE_OFFSET = 40
         const val GEOMETRY_SLOT_COUNT_OFFSET = 44
         const val GEOMETRY_LOGICAL_BLOCK_SIZE_OFFSET = 48
+        const val SHA256_SIZE = 32
+        const val UINT32_BYTES = 4
         const val METADATA_ALIGNMENT_BYTES = 512L
         const val MAXIMUM_METADATA_SLOTS = 8
         const val DEFAULT_MAXIMUM_METADATA_SLOT_BYTES = 64L * 1024 * 1024
@@ -140,6 +186,8 @@ private fun ByteArray.readUInt32Le(offset: Int): Long {
         ((this[offset + 2].toLong() and 0xFFL) shl 16) or
         ((this[offset + 3].toLong() and 0xFFL) shl 24)
 }
+
+private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
 private fun checkedAdd(left: Long, right: Long, label: String): Long = try {
     Math.addExact(left, right)
