@@ -8,6 +8,7 @@ internal data class FirmwareLabParserOperations(
     val parseSparse: (InputStream) -> AndroidSparseImageMetadata,
     val parseBoot: (InputStream) -> AndroidBootImageMetadata,
     val parseSuper: (InputStream, AndroidSuperMetadataCopy) -> AndroidSuperMetadata,
+    val parseSparseSuper: (() -> InputStream) -> AndroidSuperMetadata?,
 )
 
 /**
@@ -26,6 +27,7 @@ class FirmwareLabAnalyzer internal constructor(
         sparseParser: AndroidSparseImageParser = AndroidSparseImageParser(),
         bootParser: AndroidBootImageParser = AndroidBootImageParser(),
         superParser: AndroidSuperMetadataParser = AndroidSuperMetadataParser(),
+        sparseSuperParser: AndroidSparseSuperMetadataParser = AndroidSparseSuperMetadataParser(),
         maximumListedEntries: Int = DEFAULT_MAXIMUM_LISTED_ENTRIES,
     ) : this(
         parserOperations = FirmwareLabParserOperations(
@@ -35,6 +37,7 @@ class FirmwareLabAnalyzer internal constructor(
             parseSuper = { source, copy ->
                 superParser.parse(source, metadataCopy = copy)
             },
+            parseSparseSuper = sparseSuperParser::parseIfPresent,
         ),
         maximumListedEntries = maximumListedEntries,
     )
@@ -63,6 +66,9 @@ class FirmwareLabAnalyzer internal constructor(
             FirmwareFormat.ANDROID_SPARSE -> {
                 val metadata = openStream().use(parserOperations.parseSparse)
                 sections += FirmwareLabReportSections.sparse(metadata, maximumListedEntries)
+                parserOperations.parseSparseSuper(openStream)?.let { superMetadata ->
+                    sections += FirmwareLabReportSections.superImage(superMetadata, maximumListedEntries)
+                }
             }
 
             FirmwareFormat.ANDROID_BOOT_IMAGE -> {

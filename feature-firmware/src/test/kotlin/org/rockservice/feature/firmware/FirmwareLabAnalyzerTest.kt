@@ -102,6 +102,7 @@ class FirmwareLabAnalyzerTest {
                 }
                 fakeSuperMetadata(copy)
             },
+            parseSparseSuper = { error("Sparse-super parser must not be called") },
         )
         val analyzer = FirmwareLabAnalyzer(parserOperations = operations)
 
@@ -120,6 +121,77 @@ class FirmwareLabAnalyzerTest {
             report.sections
                 .flatMap { section -> section.lines }
                 .any { line -> line.contains("BACKUP") },
+        )
+    }
+
+    @Test
+    fun `sparse super analysis appends validated liblp section`() {
+        var sparseSuperCalls = 0
+        val operations = FirmwareLabParserOperations(
+            analyzeFirmware = {
+                FirmwareAnalysis(
+                    format = FirmwareFormat.ANDROID_SPARSE,
+                    sha256 = "1".repeat(64),
+                    bytesRead = 64,
+                    warnings = emptyList(),
+                )
+            },
+            parseSparse = { fakeSparseMetadata() },
+            parseBoot = { error("Boot parser must not be called") },
+            parseSuper = { _, _ -> error("Raw super parser must not be called directly") },
+            parseSparseSuper = {
+                sparseSuperCalls += 1
+                fakeSuperMetadata(AndroidSuperMetadataCopy.PRIMARY)
+            },
+        )
+        val analyzer = FirmwareLabAnalyzer(parserOperations = operations)
+
+        val report = analyzer.analyze(
+            displayName = "super-sparse.img",
+            declaredSizeBytes = 64,
+        ) {
+            ByteArrayInputStream(ByteArray(64))
+        }
+
+        assertEquals(1, sparseSuperCalls)
+        assertEquals(FirmwareFormat.ANDROID_SPARSE, report.detectedFormat)
+        assertTrue(
+            report.sections
+                .flatMap { section -> section.lines }
+                .any { line -> line.contains("PRIMARY") },
+        )
+    }
+
+    @Test
+    fun `ordinary sparse image remains valid when no liblp geometry is present`() {
+        val operations = FirmwareLabParserOperations(
+            analyzeFirmware = {
+                FirmwareAnalysis(
+                    format = FirmwareFormat.ANDROID_SPARSE,
+                    sha256 = "2".repeat(64),
+                    bytesRead = 64,
+                    warnings = emptyList(),
+                )
+            },
+            parseSparse = { fakeSparseMetadata() },
+            parseBoot = { error("Boot parser must not be called") },
+            parseSuper = { _, _ -> error("Raw super parser must not be called") },
+            parseSparseSuper = { null },
+        )
+        val analyzer = FirmwareLabAnalyzer(parserOperations = operations)
+
+        val report = analyzer.analyze(
+            displayName = "system.sparse",
+            declaredSizeBytes = 64,
+        ) {
+            ByteArrayInputStream(ByteArray(64))
+        }
+
+        assertEquals(FirmwareFormat.ANDROID_SPARSE, report.detectedFormat)
+        assertFalse(
+            report.sections
+                .flatMap { section -> section.lines }
+                .any { line -> line.contains("PRIMARY") },
         )
     }
 
@@ -152,6 +224,30 @@ class FirmwareLabAnalyzerTest {
             }
         }
     }
+
+    private fun fakeSparseMetadata(): AndroidSparseImageMetadata = AndroidSparseImageMetadata(
+        header = AndroidSparseHeader(
+            majorVersion = 1,
+            minorVersion = 0,
+            fileHeaderSize = 28,
+            chunkHeaderSize = 12,
+            blockSizeBytes = 4096,
+            totalBlocks = 1,
+            totalChunks = 1,
+            imageChecksum = 0,
+        ),
+        chunks = listOf(
+            AndroidSparseChunk(
+                index = 0,
+                type = AndroidSparseChunkType.DONT_CARE,
+                outputStartBlock = 0,
+                outputBlockCount = 1,
+                inputPayloadSizeBytes = 0,
+            ),
+        ),
+        expandedSizeBytes = 4096,
+        sparseBytesConsumed = 40,
+    )
 
     private fun fakeSuperMetadata(copy: AndroidSuperMetadataCopy): AndroidSuperMetadata {
         val emptyDescriptor = AndroidSuperTableDescriptor(
