@@ -46,42 +46,91 @@ internal data class HardwareValidationScreenState(
     val runState: HardwareValidationRunState = HardwareValidationRunState.Idle,
     val metadataProbeState: RockchipMetadataProbeState = RockchipMetadataProbeState.Idle,
     val exportMessage: String? = null,
+    val boundedReadRetryBlocked: Boolean = false,
 )
 
 /** Owns passive hardware-validation evidence without retaining Android USB transport identifiers. */
 internal class HardwareValidationViewModel : ViewModel() {
     private val mutableState = MutableStateFlow(HardwareValidationScreenState())
+    private val stateLock = Any()
     private var validationJob: Job? = null
     private var metadataProbeJob: Job? = null
     private var exportJob: Job? = null
+    @Volatile
     private var validationGeneration: Long = 0L
+    @Volatile
     private var metadataProbeGeneration: Long = 0L
+    @Volatile
+    private var exportGeneration: Long = 0L
 
     val state = mutableState.asStateFlow()
 
     fun setBoardOrDeviceModel(value: String) {
-        mutableState.value = mutableState.value.copy(boardOrDeviceModel = value.take(MAXIMUM_NOTE_LENGTH))
+        updateState { current -> current.copy(boardOrDeviceModel = value.take(MAXIMUM_NOTE_LENGTH)) }
     }
 
     fun setKnownSoc(value: String) {
-        mutableState.value = mutableState.value.copy(knownSoc = value.take(MAXIMUM_NOTE_LENGTH))
+        updateState { current -> current.copy(knownSoc = value.take(MAXIMUM_NOTE_LENGTH)) }
     }
 
     fun setOtgAdapter(value: String) {
-        mutableState.value = mutableState.value.copy(otgAdapter = value.take(MAXIMUM_NOTE_LENGTH))
+        updateState { current -> current.copy(otgAdapter = value.take(MAXIMUM_NOTE_LENGTH)) }
     }
 
-    fun recordAttachmentEvent(kind: UsbAttachmentEventKind) {
+    /** Clears target-scoped state when the operator selects a different USB target. */
+    fun invalidateActiveTarget() {
+        validationJob?.cancel()
+        metadataProbeJob?.cancel()
+        exportJob?.cancel()
+        synchronized(stateLock) {
+            validationGeneration += 1L
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+            mutableState.value = mutableState.value.copy(
+                runState = HardwareValidationRunState.Idle,
+                metadataProbeState = RockchipMetadataProbeState.Idle,
+                exportMessage = null,
+                boundedReadRetryBlocked = false,
+            )
+        }
+    }
+
+    /** Records a sanitized USB event and updates the reconnect latch only for the selected target. */
+    fun recordAttachmentEvent(
+        kind: UsbAttachmentEventKind,
+        affectsSelectedTarget: Boolean,
+    ) {
         val event = UsbHardwareValidationEvent(
             kind = kind,
             timestampEpochMillis = System.currentTimeMillis(),
         )
+        validationJob?.cancel()
         metadataProbeJob?.cancel()
-        metadataProbeGeneration += 1L
-        mutableState.value = mutableState.value.copy(
-            events = (mutableState.value.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
-            metadataProbeState = RockchipMetadataProbeState.Idle,
-        )
+        exportJob?.cancel()
+        synchronized(stateLock) {
+            validationGeneration += 1L
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+            val current = mutableState.value
+            val retryBlocked = when {
+                !affectsSelectedTarget -> current.boundedReadRetryBlocked
+                kind == UsbAttachmentEventKind.ATTACHED -> false
+                kind == UsbAttachmentEventKind.DETACHED -> true
+                else -> current.boundedReadRetryBlocked
+            }
+            mutableState.value = current.copy(
+                events = (current.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
+                runState = HardwareValidationRunState.Idle,
+                metadataProbeState = RockchipMetadataProbeState.Idle,
+                exportMessage = null,
+                boundedReadRetryBlocked = retryBlocked,
+            )
+        }
+    }
+
+    /** Latches bounded-read retry until the selected target is reattached or changed. */
+    fun blockBoundedReadRetry() {
+        updateState { current -> current.copy(boundedReadRetryBlocked = true) }
     }
 
     fun runValidation(
@@ -91,14 +140,19 @@ internal class HardwareValidationViewModel : ViewModel() {
     ) {
         validationJob?.cancel()
         metadataProbeJob?.cancel()
-        metadataProbeGeneration += 1L
-        val generation = ++validationGeneration
-        val stateAtStart = mutableState.value
-        mutableState.value = stateAtStart.copy(
-            runState = HardwareValidationRunState.Running,
-            metadataProbeState = RockchipMetadataProbeState.Idle,
-            exportMessage = null,
-        )
+        exportJob?.cancel()
+        val generation = synchronized(stateLock) {
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+            val nextGeneration = ++validationGeneration
+            val stateAtStart = mutableState.value
+            mutableState.value = stateAtStart.copy(
+                runState = HardwareValidationRunState.Running,
+                metadataProbeState = RockchipMetadataProbeState.Idle,
+                exportMessage = null,
+            )
+            nextGeneration
+        }
         validationJob = viewModelScope.launch(Dispatchers.IO) {
             val check = try {
                 val bytes = backend.read(
@@ -134,21 +188,23 @@ internal class HardwareValidationViewModel : ViewModel() {
                 failedCheck("Falha inesperada ${error.javaClass.simpleName}: ${error.message ?: "sem detalhe"}.")
             }
 
-            if (generation != validationGeneration) return@launch
-            val latest = mutableState.value
-            val report = UsbHardwareValidationReport(
-                generatedAtEpochMillis = System.currentTimeMillis(),
-                host = hostInfo,
-                notes = UsbHardwareValidationNotes(
-                    boardOrDeviceModel = latest.boardOrDeviceModel,
-                    knownSoc = latest.knownSoc,
-                    otgAdapter = latest.otgAdapter,
-                ),
-                device = UsbHardwareValidationDevice.from(snapshot),
-                descriptorCheck = check,
-                events = latest.events,
-            )
-            mutableState.value = latest.copy(runState = HardwareValidationRunState.Ready(report))
+            synchronized(stateLock) {
+                if (generation != validationGeneration) return@synchronized
+                val latest = mutableState.value
+                val report = UsbHardwareValidationReport(
+                    generatedAtEpochMillis = System.currentTimeMillis(),
+                    host = hostInfo,
+                    notes = UsbHardwareValidationNotes(
+                        boardOrDeviceModel = latest.boardOrDeviceModel,
+                        knownSoc = latest.knownSoc,
+                        otgAdapter = latest.otgAdapter,
+                    ),
+                    device = UsbHardwareValidationDevice.from(snapshot),
+                    descriptorCheck = check,
+                    events = latest.events,
+                )
+                mutableState.value = latest.copy(runState = HardwareValidationRunState.Ready(report))
+            }
         }
     }
 
@@ -157,12 +213,15 @@ internal class HardwareValidationViewModel : ViewModel() {
         snapshot: UsbDiagnosticsDeviceSnapshot,
         client: AndroidRockchipReadOnlyMetadataClient,
     ) {
-        val validation = mutableState.value.runState as? HardwareValidationRunState.Ready ?: return
-        if (!validation.report.descriptorCheck.succeeded) return
-
         metadataProbeJob?.cancel()
-        val generation = ++metadataProbeGeneration
-        mutableState.value = mutableState.value.copy(metadataProbeState = RockchipMetadataProbeState.Running)
+        val generation = synchronized(stateLock) {
+            val validation = mutableState.value.runState as? HardwareValidationRunState.Ready
+                ?: return
+            if (!validation.report.descriptorCheck.succeeded) return
+            val nextGeneration = ++metadataProbeGeneration
+            mutableState.value = mutableState.value.copy(metadataProbeState = RockchipMetadataProbeState.Running)
+            nextGeneration
+        }
         metadataProbeJob = viewModelScope.launch(Dispatchers.IO) {
             val nextState = try {
                 RockchipMetadataProbeState.Ready(client.probe(snapshot.descriptor))
@@ -174,41 +233,63 @@ internal class HardwareValidationViewModel : ViewModel() {
                         ?: "Falha inesperada ${error.javaClass.simpleName} no probe de metadados.",
                 )
             }
-            if (generation != metadataProbeGeneration) return@launch
-            mutableState.value = mutableState.value.copy(metadataProbeState = nextState)
+            synchronized(stateLock) {
+                if (generation != metadataProbeGeneration) return@synchronized
+                mutableState.value = mutableState.value.copy(metadataProbeState = nextState)
+            }
         }
     }
 
     fun exportReport(contentResolver: ContentResolver, uri: Uri) {
-        val report = (mutableState.value.runState as? HardwareValidationRunState.Ready)?.report ?: return
         exportJob?.cancel()
+        val export = synchronized(stateLock) {
+            val report = (mutableState.value.runState as? HardwareValidationRunState.Ready)?.report
+                ?: return
+            val generation = ++exportGeneration
+            mutableState.value = mutableState.value.copy(exportMessage = null)
+            report to generation
+        }
+        val report = export.first
+        val generation = export.second
         exportJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
+            val message = try {
                 val output = contentResolver.openOutputStream(uri, "wt")
                     ?: throw IOException("O destino selecionado nao pode ser aberto.")
                 output.bufferedWriter(Charsets.UTF_8).use { writer -> writer.write(report.toPlainText()) }
-                mutableState.value = mutableState.value.copy(exportMessage = "Relatorio de validacao exportado.")
+                "Relatorio de validacao exportado."
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: SecurityException) {
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = "O Android negou acesso ao destino do relatorio.",
-                )
+                error.message?.ifBlank { null }
+                    ?: "O Android negou acesso ao destino do relatorio."
             } catch (error: IOException) {
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = error.message ?: "Falha ao exportar o relatorio.",
-                )
+                error.message ?: "Falha ao exportar o relatorio."
+            }
+            synchronized(stateLock) {
+                if (generation != exportGeneration) return@synchronized
+                mutableState.value = mutableState.value.copy(exportMessage = message)
             }
         }
     }
 
     override fun onCleared() {
-        validationGeneration += 1L
-        metadataProbeGeneration += 1L
         validationJob?.cancel()
         metadataProbeJob?.cancel()
         exportJob?.cancel()
+        synchronized(stateLock) {
+            validationGeneration += 1L
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+        }
         super.onCleared()
+    }
+
+    private inline fun updateState(
+        transform: (HardwareValidationScreenState) -> HardwareValidationScreenState,
+    ) {
+        synchronized(stateLock) {
+            mutableState.value = transform(mutableState.value)
+        }
     }
 
     private fun failedCheck(detail: String): UsbHardwareValidationDescriptorCheck =
