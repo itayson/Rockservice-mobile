@@ -1,72 +1,84 @@
 # RockService Mobile
 
-Aplicativo Android open source para diagnóstico, análise de firmware e manutenção **autorizada** de equipamentos Rockchip, respeitando os limites do Android, do hardware e das evidências de compatibilidade disponíveis.
+Aplicativo Android open source para diagnóstico, análise e transformação controlada de firmware, validação USB/ADB e manutenção **autorizada** de equipamentos, com foco atual em Rockchip e fluxos Android.
 
-## Estado atual
+## Estado atual — 0.2.0-alpha01
 
-`0.1.0-alpha01` continua sendo uma versão de desenvolvimento, mas a fundação já ultrapassou o bootstrap exclusivamente simulado.
+A versão `0.2.0-alpha01` é uma prévia de desenvolvimento utilizável. Operações destrutivas de hardware continuam deliberadamente desativadas até existirem evidências físicas e gates de segurança suficientes.
+
+### Laboratório de Firmware
 
 Implementado e coberto por testes/CI:
 
-- aplicativo Android com Jetpack Compose;
-- Laboratório de Firmware como tela inicial, com seleção de documento, análise em background, prévia e exportação de relatório técnico;
-- acesso explícito à tela de diagnóstico de dispositivos já existente;
-- detecção de capacidades do dispositivo host;
-- identificação de formatos de firmware por magic bytes, incluindo Android Sparse, Android Boot Image e Android Super raw;
-- SHA-256 em streaming e limites para análise de arquivos;
-- parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos, sem expansão de payload;
-- parser estrutural Android Boot Image v0-v4 com validação de páginas, seções, offsets e truncamento, sem extração de payload;
-- parser raw de metadados Android `super`/liblp com validação de geometria, SHA-256, tabelas e referências cruzadas, sem mapear partições;
-- backend USB simulado com validações de alvo, limites, timeout e lifecycle;
-- backend Android USB Host em modo somente leitura para enumeração e descritores USB;
-- solicitação controlada de permissão USB e revalidação do alvo;
-- inspeção passiva de interfaces e endpoints;
-- identificação conservadora do vendor ID Rockchip `0x2207`;
-- probe passivo de topologia bulk sem afirmar Loader ou Maskrom;
-- painel de diagnóstico USB com atualização manual;
-- monitoramento de attach/detach com re-enumeração completa;
-- seleção explícita e reconciliação de um único alvo USB;
-- codec Rockchip isolado para consultas de metadados allowlisted;
-- sessão read-only abstrata e serializada, sem transporte Android real;
-- parsers defensivos para chip info, flash ID/info, storage e capability;
-- CI, CodeQL, Gitleaks e gates de supply chain;
-- política de confirmação para operações destrutivas futuras;
-- módulos NDK isolados para evolução posterior.
+- seleção explícita de documentos pelo Storage Access Framework, sem permissão ampla de armazenamento;
+- identificação de formatos e SHA-256 integral em streaming;
+- Android Sparse: parser estrutural defensivo e expansão streaming de `RAW`, `FILL`, `DONT_CARE` e `CRC32`;
+- destino explícito para expansão Sparse, proteção direta contra origem=destino e aviso de saída parcial;
+- Android Boot Image v0-v4: parser de layout e extração individual de payloads não vazios;
+- revalidação do SHA-256 completo da Boot Image durante a extração;
+- `super.img` raw/liblp: geometria, checksums, tabelas, grupos, block devices e referências cruzadas;
+- análise de metadata liblp diretamente de `super.img` Android Sparse por decodificação limitada de prefixo;
+- mapeamento imutável de partições lógicas com extents `LINEAR` e `ZERO`;
+- exportação streaming de uma partição lógica por vez a partir de `super.img` raw, com SHA-256 da saída e contagem exata;
+- inspeção estrutural limitada de imagens raw ext4, F2FS, EROFS e SquashFS, sem montagem;
+- relatório técnico exportável e log estruturado/sanitizado em JSONL.
 
-### Validação física
+### USB Host e Rockchip somente leitura
 
-O backend Android USB Host e as camadas passivas acima estão implementados e cobertos por testes automatizados, mas **o suporte em hardware Rockchip físico ainda não foi comprovado como matriz de compatibilidade**. Essa validação está rastreada em `#18` e é pré-requisito para conectar o transporte Rockchip real ao dispositivo.
+Implementado:
 
-## Limites atuais
+- enumeração Android USB Host e monitoramento de attach/detach;
+- seleção explícita e revalidação do alvo por identidade USB;
+- solicitação controlada de permissão Android;
+- inspeção passiva de interfaces/endpoints e descritores;
+- transporte Android Rockchip real somente leitura, serializado e fail-closed;
+- baseline ativo validado em hardware autorizado para `TEST_UNIT_READY`, `READ_CHIP_INFO`, `READ_FLASH_ID` e `READ_FLASH_INFO`;
+- leitura LBA limitada localmente e prova controlada de exatamente um setor no LBA 0;
+- plano e integração interna para inspeção fixa de dois setores LBA 0–1 e assinaturas MBR/GPT;
+- proteção contra resultados obsoletos, timeouts, concorrência e sessões que exigem reconexão.
 
-Ainda **não** estão implementados ou habilitados:
+A expansão para leituras físicas maiores continua bloqueada pelos gates de hardware `#18` e `#35`.
 
-- expansão ou extração de imagens Android Sparse;
-- extração ou modificação de payloads de Android Boot Images;
-- expansão automática de `super.img` sparse para análise liblp;
-- seleção de slots liblp além do slot 0 pela interface;
-- mapeamento ou extração de partições lógicas a partir de extents `super`;
-- parser estrutural especializado para ZIP, ELF ou ISO 9660;
-- transporte Rockchip real por `bulkTransfer()`;
-- identificação ativa de Loader ou Maskrom;
-- leitura de NAND, SPI NAND, eMMC ou partições via protocolo Rockchip;
-- backup físico de armazenamento;
-- gravação, erase, reset ou download de loader;
-- root;
-- bypass de autenticação ou bootloader;
-- release de produção assinada e publicada automaticamente.
+### ADB
 
-A validação física do USB Host está rastreada em `#18`. O transporte Rockchip real somente leitura está bloqueado por essa validação em `#19`. A cadeia de release assinada/SBOM está rastreada em `#20`.
+Implementado:
+
+- codec defensivo do protocolo ADB para `SYNC`, `CNXN`, `AUTH`, `OPEN`, `OKAY`, `CLSE` e `WRTE`;
+- framing de 24 bytes, magic, checksum legado, uint32 e limites de payload;
+- identidade RSA 2048 compatível com `AUTH`, incluindo registro público ADB e assinatura do token;
+- máquina de estados fail-closed para `CNXN/AUTH`;
+- transporte Android USB de frames ADB com perfil de interface e endpoints Bulk validados;
+- tela de validação explícita de conexão/autorização ADB por USB;
+- identidade ADB persistida somente no armazenamento privado `noBackupFilesDir` do aplicativo;
+- nenhum shell ou serviço remoto aberto automaticamente pelo fluxo de validação.
+
+## Limites deliberados
+
+Ainda não são considerados concluídos ou habilitados:
+
+- matriz ampla de compatibilidade física Rockchip (`#18`);
+- validação física final da inspeção fixa LBA 0–1 (`#35`);
+- backup físico genérico de NAND, SPI NAND, eMMC ou partições Rockchip;
+- gravação, erase, reset, download automático de loader ou operações destrutivas;
+- Loader/Maskrom genérico sem combinação de hardware/loader explicitamente validada;
+- execução arbitrária de comandos root recebidos da internet;
+- shell ADB arbitrário na interface padrão;
+- extração direta de partições lógicas de um `super.img` ainda sparse sem expansão explícita para RAW;
+- release de produção assinada até os secrets/keystore e gates administrativos de `#20` estarem configurados.
+
+O APK de debug pode ser compilado e instalado para uso e validação. Ele é assinado pela chave de debug do Android e não deve ser confundido com uma release de produção assinada.
 
 ## Modelo de segurança
 
-O Laboratório de Firmware abre apenas documentos selecionados pelo usuário, não inclui o URI original no relatório e não solicita acesso amplo ao armazenamento para esse fluxo.
-
-Broadcasts USB servem apenas como sinal para uma nova enumeração. Nenhum dispositivo é autorizado diretamente por dados recebidos de broadcast.
-
-O codec Rockchip não expõe comandos de escrita e não representa subcódigos de erase/format. A sessão de protocolo permanece desconectada do hardware até existir validação física suficiente.
-
-Os parsers Android Sparse, Android Boot e `super`/liblp validam apenas estruturas declaradas e aplicam limites explícitos. Eles não provam compatibilidade da imagem com qualquer dispositivo e não habilitam gravação.
+- nenhuma operação de firmware é iniciada automaticamente ao selecionar um arquivo;
+- transformações e exportações exigem destino escolhido explicitamente;
+- resultados antigos são invalidados quando a origem ou o alvo muda;
+- logs sanitizados não armazenam URIs de documentos nem material criptográfico ADB;
+- a chave privada ADB fica no armazenamento privado não incluído em backup do aplicativo;
+- broadcasts USB apenas disparam nova enumeração; dados de broadcast não autorizam um alvo;
+- operações Rockchip de escrita permanecem ausentes/desativadas por padrão;
+- o build mantém `REAL_USB_WRITE_ENABLED=false` tanto em debug quanto em release;
+- compatibilidade de firmware nunca é inferida apenas por uma assinatura estrutural.
 
 ## Compilação
 
@@ -76,25 +88,23 @@ Requisitos: JDK 17, Android SDK 36, CMake 3.22.1 e NDK configurado.
 ./gradlew --no-daemon test :app:assembleDebug lint
 ```
 
-O Gradle Wrapper 8.13 oficial está versionado no repositório. A distribuição possui SHA-256 fixado em `gradle-wrapper.properties` e o CI também valida o checksum do `gradle-wrapper.jar` antes de executá-lo.
+O CI também executa CodeQL, Gitleaks e gates de supply chain. O Gradle Wrapper 8.13 é versionado com verificações de integridade.
 
-## Documentação
+## Cadeia de release
 
-Consulte:
+A infraestrutura de build de release exige assinatura real, valida o APK com `apksigner`, gera checksum/SBOM/provenance e separa build da publicação. A ativação operacional permanece bloqueada por `#20`; nenhum segredo de assinatura é armazenado no repositório.
 
-- `docs/FEASIBILITY.md`;
-- `docs/ARCHITECTURE.md`;
-- `docs/FIRMWARE_LAB.md`;
-- `docs/ANDROID_USB_HOST.md`;
-- `docs/ROCKCHIP_PASSIVE_PROBE.md`;
-- `docs/USB_DIAGNOSTICS_DASHBOARD.md`;
-- `docs/USB_TARGET_SELECTION.md`;
-- `docs/ROCKCHIP_READONLY_PROTOCOL_CODEC.md`;
-- `docs/ROCKCHIP_READONLY_SESSION.md`;
-- `docs/ROCKCHIP_METADATA_PARSERS.md`;
-- `docs/ANDROID_SPARSE_STRUCTURE.md`;
-- `docs/ANDROID_BOOT_IMAGE_STRUCTURE.md`;
-- `docs/ANDROID_SUPER_METADATA.md`;
-- `docs/ROADMAP.md`;
-- `docs/THREAT_MODEL.md`;
-- `SECURITY.md`.
+## Documentação principal
+
+- `docs/ARCHITECTURE.md`
+- `docs/FIRMWARE_LAB.md`
+- `docs/ANDROID_USB_HOST.md`
+- `docs/ROCKCHIP_READONLY_PROTOCOL_CODEC.md`
+- `docs/ROCKCHIP_METADATA_PARSERS.md`
+- `docs/ANDROID_SPARSE_STRUCTURE.md`
+- `docs/ANDROID_SPARSE_SUPER_METADATA.md`
+- `docs/ANDROID_BOOT_IMAGE_STRUCTURE.md`
+- `docs/ANDROID_SUPER_METADATA.md`
+- `docs/ROADMAP.md`
+- `docs/THREAT_MODEL.md`
+- `SECURITY.md`
