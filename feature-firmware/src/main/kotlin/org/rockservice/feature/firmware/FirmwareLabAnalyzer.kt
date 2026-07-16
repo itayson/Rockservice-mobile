@@ -86,11 +86,15 @@ class FirmwareLabAnalyzer internal constructor(
                 if (baseAnalysis.bytesRead < MINIMUM_RAW_FILESYSTEM_INSPECTION_BYTES) {
                     sections += unsupportedSection()
                 } else {
-                    val inspection = openStream().use(parserOperations.inspectRawFilesystem)
-                    if (inspection.type == RawFilesystemType.UNKNOWN) {
-                        sections += unsupportedSection()
-                    } else {
-                        sections += FirmwareLabReportSections.rawFilesystem(inspection)
+                    try {
+                        val inspection = openStream().use(parserOperations.inspectRawFilesystem)
+                        if (inspection.type == RawFilesystemType.UNKNOWN) {
+                            sections += unsupportedSection()
+                        } else {
+                            sections += FirmwareLabReportSections.rawFilesystem(inspection)
+                        }
+                    } catch (error: IllegalArgumentException) {
+                        sections += FirmwareLabReportSections.rawFilesystemRejected(error.message)
                     }
                 }
             }
