@@ -54,7 +54,9 @@ internal class HardwareValidationViewModel : ViewModel() {
     private var validationJob: Job? = null
     private var metadataProbeJob: Job? = null
     private var exportJob: Job? = null
+    @Volatile
     private var validationGeneration: Long = 0L
+    @Volatile
     private var metadataProbeGeneration: Long = 0L
 
     val state = mutableState.asStateFlow()
