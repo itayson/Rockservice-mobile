@@ -3,7 +3,6 @@ package org.rockservice.core.usb.adb
 import java.security.MessageDigest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 
@@ -34,11 +33,6 @@ class AdbSyncPullProtocolException(
     message: String,
     cause: Throwable? = null,
 ) : IllegalStateException(message, cause)
-
-/** The complete pull did not finish inside the caller-approved deadline. */
-class AdbSyncPullTimeoutException(
-    val timeoutMillis: Long,
-) : IllegalStateException("ADB Sync pull excedeu o timeout total de $timeoutMillis ms.")
 
 /**
  * Streams one already-open `sync:` ADB service into a bounded caller sink.
@@ -87,7 +81,9 @@ class AdbSyncPullEngine(
 
         try {
             return withTimeout(timeoutMillis) {
-                stream.write(request, boundedStreamTimeout(timeoutMillis))
+                // Use the same deadline as the outer operation; do not create a shorter implicit
+                // timeout for the initial RECV request.
+                stream.write(request, timeoutMillis)
 
                 while (true) {
                     val transportChunk = stream.read()
@@ -117,6 +113,8 @@ class AdbSyncPullEngine(
                                         rejectedChunkBytes = payload.size,
                                     )
                                 }
+                                // Hash before invoking caller code so sink-side mutation cannot alter
+                                // the integrity result for bytes received from the peer.
                                 digest.update(payload)
                                 onData(payload)
                                 deliveredBytes += payload.size.toLong()
@@ -145,9 +143,8 @@ class AdbSyncPullEngine(
                     }
                 }
             }
-        } catch (timeout: TimeoutCancellationException) {
-            throw AdbSyncPullTimeoutException(timeoutMillis)
         } catch (cancelled: CancellationException) {
+            // Includes the total withTimeout deadline. Preserve cancellation semantics for callers.
             throw cancelled
         } finally {
             withContext(NonCancellable) {
@@ -187,16 +184,12 @@ class AdbSyncPullEngine(
         }
     }
 
-    private fun boundedStreamTimeout(totalTimeoutMillis: Long): Long =
-        minOf(totalTimeoutMillis, DEFAULT_STREAM_WRITE_TIMEOUT_MILLIS)
-
     companion object {
         const val DEFAULT_MAXIMUM_BYTES = 64L * 1024L * 1024L
         const val DEFAULT_TIMEOUT_MILLIS = 2L * 60L * 1000L
         const val MAXIMUM_ALLOWED_BYTES = 8L * 1024L * 1024L * 1024L
         const val MAXIMUM_ALLOWED_TIMEOUT_MILLIS = 30L * 60L * 1000L
 
-        private const val DEFAULT_STREAM_WRITE_TIMEOUT_MILLIS = 5_000L
         private const val CLEANUP_TIMEOUT_MILLIS = 1_000L
     }
 }
