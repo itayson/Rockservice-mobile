@@ -92,6 +92,7 @@ internal class AdbProbeViewModel(
     private val identityStore = AdbAppIdentityStore(appContext)
     private val mutableState = MutableStateFlow(AdbProbeScreenState())
     private val operationGeneration = AtomicLong(0L)
+    private val diagnosticsGeneration = AtomicLong(0L)
     private val started = AtomicBoolean(false)
     private val connectionLock = Any()
     private var scanJob: Job? = null
@@ -113,6 +114,7 @@ internal class AdbProbeViewModel(
 
     fun refresh() {
         val generation = operationGeneration.incrementAndGet()
+        diagnosticsGeneration.incrementAndGet()
         probeJob?.cancel()
         diagnosticsJob?.cancel()
         scanJob?.cancel()
@@ -154,6 +156,7 @@ internal class AdbProbeViewModel(
 
     fun probe(candidate: AdbProbeCandidate) {
         val generation = operationGeneration.incrementAndGet()
+        diagnosticsGeneration.incrementAndGet()
         probeJob?.cancel()
         diagnosticsJob?.cancel()
         val transportId = requireNotNull(candidate.descriptor.transportId)
@@ -294,6 +297,8 @@ internal class AdbProbeViewModel(
     /** Opens the allowlisted read-only services only after an explicit user action. */
     fun collectDiagnostics() {
         val generation = operationGeneration.get()
+        val collectionGeneration = diagnosticsGeneration.incrementAndGet()
+        diagnosticsJob?.cancel()
         val session = synchronized(connectionLock) { activeSession }
         if (session == null || mutableState.value.operation !is AdbProbeOperationState.Connected) {
             mutableState.value = mutableState.value.copy(
@@ -304,12 +309,11 @@ internal class AdbProbeViewModel(
             return
         }
 
-        diagnosticsJob?.cancel()
         mutableState.value = mutableState.value.copy(diagnostics = AdbProbeDiagnosticsState.Running)
         diagnosticsJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 val snapshot = AdbReadonlyDiagnosticRunner(session).collect()
-                if (!isCurrentSession(generation, session)) return@launch
+                if (!isCurrentDiagnostics(generation, collectionGeneration, session)) return@launch
 
                 mutableState.value = mutableState.value.copy(
                     diagnostics = AdbProbeDiagnosticsState.Ready(snapshot),
@@ -328,7 +332,7 @@ internal class AdbProbeViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (!isCurrentSession(generation, session)) return@launch
+                if (!isCurrentDiagnostics(generation, collectionGeneration, session)) return@launch
                 mutableState.value = mutableState.value.copy(
                     diagnostics = AdbProbeDiagnosticsState.Error(
                         error.message ?: "Falha inesperada na coleta ADB: ${error.javaClass.simpleName}.",
@@ -346,6 +350,7 @@ internal class AdbProbeViewModel(
     }
 
     fun cancelDiagnostics() {
+        diagnosticsGeneration.incrementAndGet()
         diagnosticsJob?.cancel()
         diagnosticsJob = null
         if (mutableState.value.operation is AdbProbeOperationState.Connected) {
@@ -355,6 +360,7 @@ internal class AdbProbeViewModel(
 
     fun cancelActiveOperation() {
         operationGeneration.incrementAndGet()
+        diagnosticsGeneration.incrementAndGet()
         probeJob?.cancel()
         diagnosticsJob?.cancel()
         scanJob?.cancel()
@@ -417,18 +423,20 @@ internal class AdbProbeViewModel(
         if (activeTransport !== transport || activeSession != null) {
             false
         } else {
-            activeTransport = null
+            // The session is the sole logical I/O owner. Keep the direct transport reference only
+            // as an idempotent fallback close handle if session.close() itself fails unexpectedly.
             activeSession = session
             true
         }
     }
 
-    private fun isCurrentSession(
-        generation: Long,
+    private fun isCurrentDiagnostics(
+        operationGeneration: Long,
+        collectionGeneration: Long,
         session: AdbSessionController,
-    ): Boolean = operationGeneration.get() == generation && synchronized(connectionLock) {
-        activeSession === session
-    }
+    ): Boolean = this.operationGeneration.get() == operationGeneration &&
+        diagnosticsGeneration.get() == collectionGeneration &&
+        synchronized(connectionLock) { activeSession === session }
 
     private suspend fun closeActiveConnection() {
         val resources = synchronized(connectionLock) {
@@ -439,12 +447,12 @@ internal class AdbProbeViewModel(
             session to transport
         }
         resources.first?.let { session -> closeSessionSafely(session, "active") }
-        resources.second?.let { transport -> closeTransportSafely(transport, "active") }
+        resources.second?.let { transport -> closeTransportSafely(transport, "fallback") }
     }
 
     private suspend fun closeOwnedTransport(transport: AdbMessageTransport) {
         synchronized(connectionLock) {
-            if (activeTransport === transport) activeTransport = null
+            if (activeTransport === transport && activeSession == null) activeTransport = null
         }
         closeTransportSafely(transport, "owned")
     }
@@ -517,6 +525,7 @@ internal class AdbProbeViewModel(
 
     override fun onCleared() {
         operationGeneration.incrementAndGet()
+        diagnosticsGeneration.incrementAndGet()
         scanJob?.cancel()
         probeJob?.cancel()
         diagnosticsJob?.cancel()
