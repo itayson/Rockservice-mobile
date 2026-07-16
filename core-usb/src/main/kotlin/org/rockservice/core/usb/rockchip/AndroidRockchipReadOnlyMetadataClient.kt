@@ -1,9 +1,20 @@
 package org.rockservice.core.usb.rockchip
 
 import android.content.Context
-import android.util.Log
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import java.util.logging.Level
+import java.util.logging.Logger
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
 internal fun interface RockchipReadOnlyTransportOpener {
@@ -26,17 +37,16 @@ data class RockchipMetadataProbeReport(
         get() = entries.any(RockchipMetadataProbeEntry::succeeded)
 }
 
-/**
- * Public metadata-only facade for the physically validated Android Rockchip USB transport.
- *
- * A probe keeps one validated transport session while transactions are healthy. Any USB/protocol
- * failure stops the remaining commands because the device phase can no longer be assumed to be
- * synchronized. The caller can then require a physical reconnect before another active probe.
- */
+/** Metadata-only facade for the physically validated Android Rockchip USB transport. */
 class AndroidRockchipReadOnlyMetadataClient internal constructor(
     private val opener: RockchipReadOnlyTransportOpener,
     private val transportMethod: RockchipUsbIoMethod,
+    private val closeTimeoutMillis: Long = DEFAULT_CLOSE_TIMEOUT_MILLIS,
 ) {
+    init {
+        require(closeTimeoutMillis > 0L) { "closeTimeoutMillis must be greater than zero." }
+    }
+
     constructor(context: Context) : this(
         opener = createDefaultOpener(context.applicationContext),
         transportMethod = RockchipUsbIoMethod.USB_REQUEST,
@@ -44,14 +54,19 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
 
     suspend fun probe(device: UsbDeviceDescriptor): RockchipMetadataProbeReport {
         val specs = querySpecs()
+        if (!PROBE_SLOT_RESERVED.compareAndSet(false, true)) return blockedReport(specs)
+
+        var transportOpened = false
         val transport = try {
-            opener.open(device)
+            opener.open(device).also { transportOpened = true }
         } catch (error: SecurityException) {
             return failedOpenReport(specs, error.safeMessage())
         } catch (error: IllegalArgumentException) {
             return failedOpenReport(specs, error.safeMessage())
         } catch (error: IllegalStateException) {
             return failedOpenReport(specs, error.safeMessage())
+        } finally {
+            if (!transportOpened) PROBE_SLOT_RESERVED.set(false)
         }
 
         val session = RockchipReadOnlySession(transport)
@@ -72,13 +87,7 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
                 }
             }
         } finally {
-            try {
-                session.close()
-            } catch (error: SecurityException) {
-                Log.w(TAG, "Android denied access while closing Rockchip metadata probe session.", error)
-            } catch (error: IllegalStateException) {
-                Log.w(TAG, "Failed to close Rockchip metadata probe session.", error)
-            }
+            if (!closeSessionWithinDeadline(session)) requiresReconnect = true
         }
 
         return RockchipMetadataProbeReport(
@@ -88,6 +97,46 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         )
     }
 
+    private suspend fun closeSessionWithinDeadline(session: RockchipReadOnlySession): Boolean =
+        withContext(NonCancellable + Dispatchers.IO) {
+            val completed = CountDownLatch(1)
+            val failure = AtomicReference<Exception?>(null)
+
+            CLOSE_EXECUTOR.execute {
+                try {
+                    runBlocking { session.close() }
+                } catch (error: Exception) {
+                    failure.set(error)
+                } finally {
+                    PROBE_SLOT_RESERVED.set(false)
+                    completed.countDown()
+                }
+            }
+
+            val finished = try {
+                completed.await(closeTimeoutMillis, TimeUnit.MILLISECONDS)
+            } catch (error: InterruptedException) {
+                Thread.currentThread().interrupt()
+                LOGGER.log(
+                    Level.WARNING,
+                    "Waiting for Rockchip session close was interrupted; reconnect required.",
+                    error,
+                )
+                return@withContext false
+            }
+
+            if (!finished) {
+                LOGGER.warning("Rockchip session close exceeded $closeTimeoutMillis ms; reconnect required.")
+                return@withContext false
+            }
+
+            failure.get()?.let { error ->
+                LOGGER.log(Level.WARNING, "Rockchip session close failed; reconnect required.", error)
+                return@withContext false
+            }
+            true
+        }
+
     private suspend fun query(
         session: RockchipReadOnlySession,
         spec: QuerySpec,
@@ -95,10 +144,14 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         val result = try {
             session.query(spec.operation, timeoutMillis = QUERY_TIMEOUT_MILLIS)
         } catch (timeout: TimeoutCancellationException) {
-            Log.w(TAG, "Metadata query ${spec.name} timed out after $QUERY_TIMEOUT_MILLIS ms.", timeout)
+            LOGGER.log(
+                Level.WARNING,
+                "Metadata query ${spec.name} timed out after $QUERY_TIMEOUT_MILLIS ms.",
+                timeout,
+            )
             return transportFailure(
-                spec = spec,
-                detail = "${transportMethod.displayName}/TIMEOUT: consulta excedeu $QUERY_TIMEOUT_MILLIS ms.",
+                spec,
+                "${transportMethod.displayName}/TIMEOUT: consulta excedeu $QUERY_TIMEOUT_MILLIS ms.",
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -128,6 +181,20 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
             )
         }
     }
+
+    private fun blockedReport(specs: List<QuerySpec>): RockchipMetadataProbeReport =
+        RockchipMetadataProbeReport(
+            transportMethod = transportMethod.displayName,
+            entries = specs.map { spec ->
+                RockchipMetadataProbeEntry(
+                    name = spec.name,
+                    succeeded = false,
+                    value = "Não executado porque a sessão USB anterior ainda está sendo encerrada.",
+                    attempted = false,
+                )
+            },
+            requiresReconnect = true,
+        )
 
     private fun failedOpenReport(
         specs: List<QuerySpec>,
@@ -173,9 +240,6 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
             val parsed = RockchipMetadataParsers.parseFlashInfo(data)
             "totalSectors=${parsed.totalSectors}, responseBytes=${parsed.rawResponseLength}"
         },
-        QuerySpec("READ_CAPABILITY", RockchipReadOnlyOperation.READ_CAPABILITY) { data ->
-            RockchipMetadataParsers.parseCapability(data).rawHex
-        },
     )
 
     private fun Throwable.safeMessage(): String =
@@ -195,8 +259,21 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
 
     private companion object {
         const val QUERY_TIMEOUT_MILLIS = 10_000L
+        const val DEFAULT_CLOSE_TIMEOUT_MILLIS = 2_000L
         const val MAXIMUM_ERROR_LENGTH = 240
-        const val TAG = "RockchipMetadataClient"
+        val LOGGER: Logger = Logger.getLogger("RockchipMetadataClient")
+        val PROBE_SLOT_RESERVED = AtomicBoolean(false)
+        val CLOSE_EXECUTOR = ThreadPoolExecutor(
+            1,
+            1,
+            0L,
+            TimeUnit.MILLISECONDS,
+            LinkedBlockingQueue<Runnable>(),
+            { runnable -> Thread(runnable, "RockchipMetadataClose").apply { isDaemon = true } },
+            ThreadPoolExecutor.AbortPolicy(),
+        ).apply {
+            check(prestartCoreThread()) { "Failed to prestart the Rockchip metadata close worker." }
+        }
 
         fun createDefaultOpener(context: Context): RockchipReadOnlyTransportOpener {
             val factory = AndroidRockchipReadOnlyTransportFactory(context)

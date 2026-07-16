@@ -11,7 +11,7 @@ import org.rockservice.core.usb.UsbDeviceDescriptor
 
 class AndroidRockchipReadOnlyMetadataClientTest {
     @Test
-    fun `probe uses standardized metadata operations in one session`() = runTest {
+    fun `probe uses physically validated baseline operations in one session`() = runTest {
         val transport = RecordingTransport()
         var openCount = 0
         val client = AndroidRockchipReadOnlyMetadataClient(
@@ -25,7 +25,7 @@ class AndroidRockchipReadOnlyMetadataClientTest {
         val report = client.probe(testDevice())
 
         assertEquals(1, openCount)
-        assertEquals(listOf(0x00, 0x1B, 0x01, 0x1A, 0xAA), transport.opcodes)
+        assertEquals(listOf(0x00, 0x1B, 0x01, 0x1A), transport.opcodes)
         assertTrue(report.entries.all(RockchipMetadataProbeEntry::succeeded))
         assertFalse(report.requiresReconnect)
         assertEquals(1, transport.closeCount)
@@ -48,7 +48,6 @@ class AndroidRockchipReadOnlyMetadataClientTest {
         assertFalse(report.entries[2].succeeded)
         assertTrue(report.entries[2].attempted)
         assertFalse(report.entries[3].attempted)
-        assertFalse(report.entries[4].attempted)
         assertEquals(1, transport.closeCount)
     }
 
