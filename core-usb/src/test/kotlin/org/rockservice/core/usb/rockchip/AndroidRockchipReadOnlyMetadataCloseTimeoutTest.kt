@@ -7,6 +7,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.rockservice.core.usb.UsbDeviceDescriptor
@@ -46,6 +48,37 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
             assertTrue(secondReport.requiresReconnect)
             assertEquals(4, secondReport.entries.size)
             assertTrue(secondReport.entries.all { entry -> !entry.attempted })
+
+            transport.releaseClose.countDown()
+            assertTrue(transport.closeFinished.await(1, TimeUnit.SECONDS))
+
+            val recoveryTransport = ImmediateCloseTransport()
+            val recoveryOpenCount = AtomicInteger(0)
+            val recoveryClient = AndroidRockchipReadOnlyMetadataClient(
+                opener = RockchipReadOnlyTransportOpener {
+                    recoveryOpenCount.incrementAndGet()
+                    recoveryTransport
+                },
+                transportMethod = RockchipUsbIoMethod.USB_REQUEST,
+                closeTimeoutMillis = 100L,
+            )
+
+            var recoveryReport: RockchipMetadataProbeReport? = null
+            for (attempt in 0 until 100) {
+                val candidate = recoveryClient.probe(testDevice())
+                if (recoveryOpenCount.get() > 0) {
+                    recoveryReport = candidate
+                    break
+                }
+                Thread.sleep(10L)
+            }
+
+            assertNotNull("Probe slot was not released after the close worker exited.", recoveryReport)
+            val recovered = requireNotNull(recoveryReport)
+            assertEquals(1, recoveryOpenCount.get())
+            assertTrue(recovered.entries.all(RockchipMetadataProbeEntry::succeeded))
+            assertFalse(recovered.requiresReconnect)
+            assertEquals(1, recoveryTransport.closeCount.get())
         } finally {
             transport.releaseClose.countDown()
             assertTrue(transport.closeFinished.await(1, TimeUnit.SECONDS))
@@ -72,13 +105,7 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
             command: ByteArray,
             responseLengthRange: IntRange,
             timeoutMillis: Long,
-        ): RockchipRawExchange {
-            val tag = ByteBuffer.wrap(command).order(ByteOrder.LITTLE_ENDIAN).getInt(4)
-            return RockchipRawExchange(
-                data = ByteArray(responseLengthRange.first),
-                statusBytes = successfulCsw(tag),
-            )
-        }
+        ): RockchipRawExchange = successfulExchange(command, responseLengthRange)
 
         override suspend fun close() {
             closeCount.incrementAndGet()
@@ -95,8 +122,32 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
                 closeFinished.countDown()
             }
         }
+    }
 
-        private fun successfulCsw(tag: Int): ByteArray =
+    private class ImmediateCloseTransport : RockchipReadOnlyTransport {
+        val closeCount = AtomicInteger(0)
+
+        override suspend fun exchange(
+            command: ByteArray,
+            responseLengthRange: IntRange,
+            timeoutMillis: Long,
+        ): RockchipRawExchange = successfulExchange(command, responseLengthRange)
+
+        override suspend fun close() {
+            closeCount.incrementAndGet()
+        }
+    }
+
+    private companion object {
+        fun successfulExchange(command: ByteArray, responseLengthRange: IntRange): RockchipRawExchange {
+            val tag = ByteBuffer.wrap(command).order(ByteOrder.LITTLE_ENDIAN).getInt(4)
+            return RockchipRawExchange(
+                data = ByteArray(responseLengthRange.first),
+                statusBytes = successfulCsw(tag),
+            )
+        }
+
+        fun successfulCsw(tag: Int): ByteArray =
             ByteArray(RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE).also { bytes ->
                 val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
                 buffer.putInt(0, 0x53425355)

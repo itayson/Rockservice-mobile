@@ -88,13 +88,14 @@ Entregue:
 - `READ_LBA` limitado localmente a no máximo 32 setores por transação;
 - prova física e interface controlada para leitura fixa de exatamente 1 setor no LBA 0;
 - proteção contra resultados obsoletos, leituras concorrentes e repetição após falha que exige reconexão;
-- plano preparatório e parser puro para inspeção fixa de LBA 0–1 e detecção sanitizada de assinaturas MBR/GPT, rastreados em `#35`.
+- plano preparatório e parser puro para inspeção fixa de LBA 0–1 e detecção sanitizada de assinaturas MBR/GPT;
+- integração da inspeção fixa de 2 setores no mesmo cliente de transporte somente leitura, compartilhando o gate global de sessão e permanecendo fora da UI padrão até validação física de `#35`.
 
 Próximos gates:
 
 1. concluir a matriz de hardware de `#18`, incluindo dispositivo não-Rockchip e evidência explícita de attach/detach;
 2. concluir formalmente o checklist de `#19`, cujo transporte e baseline ativo já possuem evidência em hardware autorizado;
-3. integrar e validar em hardware autorizado a inspeção fixa de exatamente 2 setores (LBA 0–1) de `#35`, sem LBA configurável e sem persistência automática de bytes brutos;
+3. validar em hardware autorizado a inspeção fixa de exatamente 2 setores (LBA 0–1) de `#35`, sem LBA configurável e sem persistência automática de bytes brutos;
 4. somente após `#35`, projetar leitura estritamente limitada das estruturas necessárias para mapear tabelas de partição, com limites derivados e validados;
 5. manter backup de partições bloqueado até existir mapeamento confiável, validação de tamanho/faixa, política de destino, retomada segura e verificação de integridade.
 
