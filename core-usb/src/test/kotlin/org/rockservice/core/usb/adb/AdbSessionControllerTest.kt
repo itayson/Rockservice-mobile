@@ -1,6 +1,7 @@
 package org.rockservice.core.usb.adb
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.runTest
@@ -152,7 +153,7 @@ class AdbSessionControllerTest {
         controller.close()
     }
 
-    private fun controller(
+    private fun CoroutineScope.controller(
         transport: FakeAdbMessageTransport,
         maxDataBytes: Long = 4096,
     ): AdbSessionController = AdbSessionController(
@@ -169,7 +170,7 @@ class AdbSessionControllerTest {
         banner = "device::ro.product.name=test;",
     )
 
-    private suspend fun openStream(
+    private suspend fun CoroutineScope.openStream(
         controller: AdbSessionController,
         transport: FakeAdbMessageTransport,
         remoteId: Long,
