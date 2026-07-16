@@ -85,6 +85,7 @@ object AdbProtocolCodec {
     const val HEADER_SIZE_BYTES = 24
     const val DEFAULT_PROTOCOL_VERSION: Long = 0x01000001L
     const val DEFAULT_MAX_DATA_BYTES: Long = 1024L * 1024L
+    const val MAXIMUM_HANDSHAKE_PAYLOAD_BYTES = 4 * 1024
     const val MAXIMUM_PAYLOAD_BYTES = 1024 * 1024
 
     /** Encodes one complete frame with checksum and command magic. */
@@ -168,7 +169,7 @@ object AdbProtocolCodec {
         )
     }
 
-    /** Creates the initial host connection message with a null-terminated banner. */
+    /** Creates the initial host CNXN message with the modern non-NUL-terminated ADB banner. */
     fun connect(
         banner: String,
         protocolVersion: Long = DEFAULT_PROTOCOL_VERSION,
@@ -182,7 +183,11 @@ object AdbProtocolCodec {
             command = AdbCommand.CNXN,
             arg0 = protocolVersion,
             arg1 = maxDataBytes,
-            payload = nullTerminatedUtf8(banner, "banner ADB"),
+            payload = utf8Payload(
+                value = banner,
+                label = "banner ADB",
+                maximumBytes = MAXIMUM_HANDSHAKE_PAYLOAD_BYTES,
+            ),
         )
     }
 
@@ -223,13 +228,26 @@ object AdbProtocolCodec {
     fun checksum(payload: ByteArray): Long =
         payload.fold(0L) { sum, byte -> (sum + (byte.toInt() and 0xFF)) and UINT32_MAX }
 
-    private fun nullTerminatedUtf8(value: String, label: String): ByteArray {
+    private fun utf8Payload(
+        value: String,
+        label: String,
+        maximumBytes: Int,
+    ): ByteArray {
         require(value.isNotBlank()) { "$label nao pode ser vazio." }
         require('\u0000' !in value) { "$label nao pode conter NUL interno." }
         val encoded = value.toByteArray(Charsets.UTF_8)
-        require(encoded.size < MAXIMUM_PAYLOAD_BYTES) {
-            "$label excede o limite de payload ADB."
+        require(encoded.size <= maximumBytes) {
+            "$label possui ${encoded.size} bytes; limite: $maximumBytes."
         }
+        return encoded
+    }
+
+    private fun nullTerminatedUtf8(value: String, label: String): ByteArray {
+        val encoded = utf8Payload(
+            value = value,
+            label = label,
+            maximumBytes = MAXIMUM_PAYLOAD_BYTES - 1,
+        )
         return encoded + byteArrayOf(0)
     }
 }
