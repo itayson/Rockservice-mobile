@@ -24,6 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import org.rockservice.core.usb.AndroidUsbAttachmentMonitor
+import org.rockservice.core.usb.adb.AdbDiagnosticSectionStatus
+import org.rockservice.core.usb.adb.AdbDiagnosticService
 
 class AdbProbeActivity : ComponentActivity() {
     private lateinit var usbAttachmentMonitor: AndroidUsbAttachmentMonitor
@@ -46,11 +48,13 @@ class AdbProbeActivity : ComponentActivity() {
             MaterialTheme {
                 val state by probeViewModel.state.collectAsState()
                 val operationRunning = state.operation is AdbProbeOperationState.Running
+                val diagnosticsRunning = state.diagnostics is AdbProbeDiagnosticsState.Running
+                val busy = operationRunning || diagnosticsRunning
                 Scaffold(
                     topBar = {
                         Surface(tonalElevation = 2.dp) {
                             Text(
-                                "Validacao ADB por USB",
+                                "ADB por USB",
                                 modifier = Modifier.padding(16.dp),
                                 style = MaterialTheme.typography.titleLarge,
                             )
@@ -68,11 +72,11 @@ class AdbProbeActivity : ComponentActivity() {
                                     modifier = Modifier.padding(16.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
-                                    Text("Conexao e autorizacao", style = MaterialTheme.typography.titleMedium)
+                                    Text("Conexao, autorizacao e diagnostico", style = MaterialTheme.typography.titleMedium)
                                     Text(
-                                        "Este fluxo detecta a interface ADB, solicita permissao USB e valida somente a negociacao de conexao e autorizacao. Nenhum servico remoto e aberto automaticamente.",
+                                        "A validacao executa somente CNXN/AUTH. Depois de conectado, a coleta read-only continua opcional e so abre os servicos exibidos quando voce tocar no botao de diagnostico.",
                                     )
-                                    Button(onClick = { probeViewModel.refresh() }, enabled = !operationRunning) {
+                                    Button(onClick = { probeViewModel.refresh() }, enabled = !busy) {
                                         Text("Atualizar dispositivos")
                                     }
                                 }
@@ -117,7 +121,7 @@ class AdbProbeActivity : ComponentActivity() {
                                                 )
                                                 Button(
                                                     onClick = { probeViewModel.probe(candidate) },
-                                                    enabled = !operationRunning,
+                                                    enabled = !busy,
                                                     modifier = Modifier.fillMaxWidth(),
                                                 ) {
                                                     Text("Validar conexao ADB")
@@ -146,12 +150,32 @@ class AdbProbeActivity : ComponentActivity() {
                             }
                             is AdbProbeOperationState.Connected -> item {
                                 Card(modifier = Modifier.fillMaxWidth()) {
-                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Text("ADB conectado e autorizado", style = MaterialTheme.typography.titleMedium)
                                         Text("Versao negociada: 0x${operation.protocolVersion.toString(16).uppercase()}")
                                         Text("Max data negociado: ${operation.maxDataBytes} bytes")
-                                        Text("Banner remoto: ${operation.banner}")
-                                        Text("Nenhum servico remoto foi aberto durante esta validacao.")
+                                        Text("Banner remoto: ${safePreview(operation.banner, MAXIMUM_BANNER_PREVIEW_CHARS)}")
+                                        Text("Nenhum servico remoto foi aberto automaticamente. A coleta abaixo e uma acao explicita e somente leitura.")
+                                        Button(
+                                            onClick = { probeViewModel.collectDiagnostics() },
+                                            enabled = !diagnosticsRunning,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text(
+                                                if (state.diagnostics is AdbProbeDiagnosticsState.Ready) {
+                                                    "Coletar novamente"
+                                                } else {
+                                                    "Coletar diagnosticos somente leitura"
+                                                },
+                                            )
+                                        }
+                                        Button(
+                                            onClick = { probeViewModel.cancelActiveOperation() },
+                                            enabled = !diagnosticsRunning,
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Text("Desconectar ADB")
+                                        }
                                     }
                                 }
                             }
@@ -162,6 +186,71 @@ class AdbProbeActivity : ComponentActivity() {
                                         Text(operation.message)
                                         if (operation.authorizationMayBePending) {
                                             Text("A autorizacao pode continuar pendente no dispositivo. Confirme o dialogo e tente novamente.")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        when (val diagnostics = state.diagnostics) {
+                            AdbProbeDiagnosticsState.Idle -> Unit
+                            AdbProbeDiagnosticsState.Running -> item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        CircularProgressIndicator()
+                                        Text("Coletando diagnosticos ADB", style = MaterialTheme.typography.titleMedium)
+                                        Text("Os servicos read-only sao executados sequencialmente com timeout e limites de memoria.")
+                                        Button(onClick = { probeViewModel.cancelDiagnostics() }) {
+                                            Text("Cancelar coleta")
+                                        }
+                                    }
+                                }
+                            }
+                            is AdbProbeDiagnosticsState.Error -> item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text("Falha na coleta ADB", style = MaterialTheme.typography.titleMedium)
+                                        Text(diagnostics.message)
+                                        if (state.operation is AdbProbeOperationState.Connected) {
+                                            Button(onClick = { probeViewModel.collectDiagnostics() }) {
+                                                Text("Tentar novamente")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            is AdbProbeDiagnosticsState.Ready -> {
+                                item {
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("Diagnosticos somente leitura", style = MaterialTheme.typography.titleMedium)
+                                            Text("${diagnostics.snapshot.sections.size} secoes; ${diagnostics.snapshot.retainedByteCount} bytes retidos em memoria.")
+                                            if (diagnostics.snapshot.budgetExhausted) {
+                                                Text("O limite global de memoria foi atingido; secoes posteriores podem ter sido ignoradas.")
+                                            }
+                                            Text("Nenhuma saida abaixo e persistida ou enviada automaticamente pelo aplicativo.")
+                                        }
+                                    }
+                                }
+                                items(
+                                    items = diagnostics.snapshot.sections,
+                                    key = { section -> section.service.name },
+                                ) { section ->
+                                    Card(modifier = Modifier.fillMaxWidth()) {
+                                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(diagnosticServiceLabel(section.service), style = MaterialTheme.typography.titleMedium)
+                                            Text("Status: ${diagnosticStatusLabel(section.status)}")
+                                            Text("Bytes retidos: ${section.retainedByteCount}; observados: ${section.observedByteCount}")
+                                            section.message?.let { message -> Text(message) }
+                                            if (section.text.isNotEmpty()) {
+                                                Text(
+                                                    safePreview(section.text, MAXIMUM_SECTION_PREVIEW_CHARS),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                )
+                                                if (section.text.length > MAXIMUM_SECTION_PREVIEW_CHARS) {
+                                                    Text("Previa visual limitada a $MAXIMUM_SECTION_PREVIEW_CHARS caracteres.")
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -178,3 +267,42 @@ class AdbProbeActivity : ComponentActivity() {
         super.onDestroy()
     }
 }
+
+private fun diagnosticServiceLabel(service: AdbDiagnosticService): String = when (service) {
+    AdbDiagnosticService.PROPERTIES -> "Propriedades Android (getprop)"
+    AdbDiagnosticService.KERNEL -> "Kernel (uname -a)"
+    AdbDiagnosticService.CPU_INFO -> "CPU (/proc/cpuinfo)"
+    AdbDiagnosticService.MEMORY_INFO -> "Memoria (/proc/meminfo)"
+    AdbDiagnosticService.STORAGE -> "Armazenamento (df -k)"
+    AdbDiagnosticService.BATTERY -> "Bateria (dumpsys battery)"
+}
+
+private fun diagnosticStatusLabel(status: AdbDiagnosticSectionStatus): String = when (status) {
+    AdbDiagnosticSectionStatus.SUCCESS -> "concluido"
+    AdbDiagnosticSectionStatus.TRUNCATED -> "truncado pelo limite"
+    AdbDiagnosticSectionStatus.UNSUPPORTED -> "nao suportado pelo dispositivo"
+    AdbDiagnosticSectionStatus.TIMEOUT -> "timeout"
+    AdbDiagnosticSectionStatus.FAILED -> "falhou"
+    AdbDiagnosticSectionStatus.SKIPPED_BUDGET -> "ignorado por limite global"
+}
+
+private fun safePreview(value: String, maximumChars: Int): String {
+    val sanitized = buildString(minOf(value.length, maximumChars + 1)) {
+        value.forEach { character ->
+            when {
+                character == '\n' || character == '\r' || character == '\t' -> append(character)
+                character.isISOControl() -> append('\uFFFD')
+                else -> append(character)
+            }
+            if (length > maximumChars) return@buildString
+        }
+    }
+    return if (sanitized.length > maximumChars) {
+        sanitized.take(maximumChars) + "…"
+    } else {
+        sanitized
+    }
+}
+
+private const val MAXIMUM_BANNER_PREVIEW_CHARS = 500
+private const val MAXIMUM_SECTION_PREVIEW_CHARS = 2_000
