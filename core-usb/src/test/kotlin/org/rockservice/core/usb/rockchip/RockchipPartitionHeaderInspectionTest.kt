@@ -7,7 +7,7 @@ import org.junit.Test
 
 class RockchipPartitionHeaderInspectionTest {
     @Test
-    fun `fixed inspection detects protective MBR and GPT signatures`() {
+    fun `fixed inspection detects MBR and GPT signatures`() {
         val data = ByteArray(RockchipPartitionHeaderInspector.EXPECTED_BYTES)
         data[510] = 0x55
         data[511] = 0xAA.toByte()
