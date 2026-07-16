@@ -20,6 +20,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 
-/** Verifies one local backup file against operator-supplied immutable metadata. */
+/** Verifies one local backup file against operator-supplied or imported immutable metadata. */
 class LocalBackupVerificationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,10 +52,26 @@ private fun LocalBackupVerificationScreen(viewModel: LocalBackupVerificationView
     var startSectorText by rememberSaveable { mutableStateOf("0") }
     var sectorCountText by rememberSaveable { mutableStateOf("") }
     var sha256Text by rememberSaveable { mutableStateOf("") }
+    var appliedManifestRevision by rememberSaveable { mutableStateOf(0L) }
     val selectedUri = selectedUriString?.let(Uri::parse)
+
     val selectFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             selectedUriString = uri.toString()
+            viewModel.clearResult()
+        }
+    }
+    val selectManifest = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.loadManifest(resolver, uri)
+    }
+
+    LaunchedEffect(state.manifestRevision) {
+        val manifest = state.loadedManifest
+        if (manifest != null && state.manifestRevision > appliedManifestRevision) {
+            startSectorText = manifest.startSector.toString()
+            sectorCountText = manifest.sectorCount.toString()
+            sha256Text = manifest.sha256
+            appliedManifestRevision = state.manifestRevision
             viewModel.clearResult()
         }
     }
@@ -77,19 +94,22 @@ private fun LocalBackupVerificationScreen(viewModel: LocalBackupVerificationView
             sectorCountText = sectorCountText,
             sha256Text = sha256Text,
             running = state.running,
+            manifestLoading = state.manifestLoading,
+            manifestMessage = state.manifestMessage,
             resultMessage = state.resultMessage,
             onSelectFile = { selectFile.launch(arrayOf("*/*")) },
+            onSelectManifest = { selectManifest.launch(arrayOf("text/*", "application/octet-stream")) },
             onStartSectorChange = {
                 startSectorText = it.filter(Char::isDigit)
-                viewModel.clearResult()
+                viewModel.markMetadataEdited()
             },
             onSectorCountChange = {
                 sectorCountText = it.filter(Char::isDigit)
-                viewModel.clearResult()
+                viewModel.markMetadataEdited()
             },
             onSha256Change = {
                 sha256Text = it.trim().lowercase().take(64)
-                viewModel.clearResult()
+                viewModel.markMetadataEdited()
             },
             onVerify = {
                 val uri = selectedUri
@@ -115,22 +135,37 @@ private fun LocalBackupVerificationForm(
     sectorCountText: String,
     sha256Text: String,
     running: Boolean,
+    manifestLoading: Boolean,
+    manifestMessage: String?,
     resultMessage: String?,
     onSelectFile: () -> Unit,
+    onSelectManifest: () -> Unit,
     onStartSectorChange: (String) -> Unit,
     onSectorCountChange: (String) -> Unit,
     onSha256Change: (String) -> Unit,
     onVerify: () -> Unit,
 ) {
+    val busy = running || manifestLoading
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        item { Text("A verificação é totalmente local e compara tamanho e SHA-256. Nenhum acesso USB ou de rede é executado.") }
         item {
-            Button(onClick = onSelectFile, enabled = !running, modifier = Modifier.fillMaxWidth()) {
-                Text(if (selectedUri == null) "Selecionar arquivo" else "Trocar arquivo selecionado")
+            Text(
+                "A verificação é totalmente local. Você pode importar o manifesto gerado pelo RockService ou preencher os metadados manualmente.",
+            )
+        }
+        item {
+            Button(onClick = onSelectManifest, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text("Carregar manifesto de integridade")
+            }
+        }
+        if (manifestLoading) item { CircularProgressIndicator() }
+        manifestMessage?.let { message -> item { Text(message) } }
+        item {
+            Button(onClick = onSelectFile, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text(if (selectedUri == null) "Selecionar arquivo de backup" else "Trocar arquivo de backup")
             }
         }
         item {
@@ -138,7 +173,7 @@ private fun LocalBackupVerificationForm(
                 value = startSectorText,
                 onValueChange = onStartSectorChange,
                 label = { Text("LBA inicial") },
-                enabled = !running,
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -148,7 +183,7 @@ private fun LocalBackupVerificationForm(
                 value = sectorCountText,
                 onValueChange = onSectorCountChange,
                 label = { Text("Quantidade de setores de 512 bytes") },
-                enabled = !running,
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -158,7 +193,7 @@ private fun LocalBackupVerificationForm(
                 value = sha256Text,
                 onValueChange = onSha256Change,
                 label = { Text("SHA-256 esperado") },
-                enabled = !running,
+                enabled = !busy,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -166,7 +201,7 @@ private fun LocalBackupVerificationForm(
         item {
             Button(
                 onClick = onVerify,
-                enabled = !running && selectedUri != null,
+                enabled = !busy && selectedUri != null,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Verificar integridade")
