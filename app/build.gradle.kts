@@ -6,6 +6,27 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val releaseKeystorePath = providers.environmentVariable("ROCKSERVICE_KEYSTORE_PATH").orNull
+val releaseKeystorePassword = providers.environmentVariable("ROCKSERVICE_KEYSTORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("ROCKSERVICE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("ROCKSERVICE_KEY_PASSWORD").orNull
+val requireReleaseSigning =
+    providers.environmentVariable("ROCKSERVICE_REQUIRE_RELEASE_SIGNING").orNull == "true"
+val releaseSigningConfigured = listOf(
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { value -> !value.isNullOrBlank() }
+
+if (requireReleaseSigning && !releaseSigningConfigured) {
+    error(
+        "Release signing is required, but ROCKSERVICE_KEYSTORE_PATH, " +
+            "ROCKSERVICE_KEYSTORE_PASSWORD, ROCKSERVICE_KEY_ALIAS and " +
+            "ROCKSERVICE_KEY_PASSWORD were not all provided.",
+    )
+}
+
 android {
     namespace = "org.rockservice.mobile"
     compileSdk = 36
@@ -20,6 +41,17 @@ android {
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseKeystorePath))
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -32,6 +64,9 @@ android {
         release {
             isMinifyEnabled = true
             buildConfigField("boolean", "REAL_USB_WRITE_ENABLED", "false")
+            if (releaseSigningConfigured) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

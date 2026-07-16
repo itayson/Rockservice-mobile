@@ -38,20 +38,28 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Detect dependency manifest changes
+      - name: Detect dependency changes
         id: dependencies
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
-          dependency_files="$(printf '%s\n' "$changed_files" | grep -E '(^|/)(build\.gradle(\.kts)?|settings\.gradle(\.kts)?|gradle/libs\.versions\.toml|gradle-wrapper\.properties|gradle\.lockfile)$' || true)"
+          files_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files?per_page=100")"
+          dependency_files="$(printf '%s' "$files_json" | jq -r '
+            .[] |
+            select(
+              (.filename | test("(^|/)(gradle/libs\\.versions\\.toml|gradle-wrapper\\.properties|gradle\\.lockfile|settings\\.gradle(\\.kts)?)$")) or
+              (
+                (.filename | test("(^|/)build\\.gradle(\\.kts)?$")) and
+                ((.patch // "") | test(
+                  "(?m)^[+-].*(implementation|api|compileOnly|runtimeOnly|testImplementation|androidTestImplementation|debugImplementation|releaseImplementation|kapt|ksp|classpath)[[:space:]]*(\\(|[[:space:]]+[\\\"\\x27])|^[+-].*(alias[[:space:]]*\\(libs\\.plugins\\.|id[[:space:]]*\\()"
+                ))
+              )
+            ) |
+            .filename
+          ')"
+
           if [ -n "$dependency_files" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             {
@@ -68,19 +76,21 @@ jobs:
         env:
           DEPENDENCY_FILES: ${{ steps.dependencies.outputs.files }}
         run: |
-          echo "::error title=Stacked dependency change blocked::Dependency manifests changed in a PR whose base is not main. Retarget after the base branch merges so Dependency Review can evaluate the complete graph."
+          echo "::error title=Stacked dependency change blocked::Dependency inputs changed in a PR whose base is not main. Retarget after the base branch merges so Dependency Review can evaluate the complete graph."
           printf '%s\n' "$DEPENDENCY_FILES"
           exit 1
 
       - name: Review dependency changes
         if: github.event.pull_request.base.ref == 'main' && steps.dependencies.outputs.changed == 'true'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5
+        with:
+          comment-summary-in-pr: on-failure
 
       - name: Record no dependency changes
         if: steps.dependencies.outputs.changed != 'true'
-        run: echo "No dependency manifest changes detected; Dependency Review is not required for this pull request."
+        run: echo "No dependency changes detected; Dependency Review is not required for this pull request."
 
       - name: Record stacked pull request limitation
         if: github.event.pull_request.base.ref != 'main' && steps.dependencies.outputs.changed != 'true'
         run: |
-          echo "::notice title=Stacked PR dependency guard::No dependency manifest changes detected. Full Dependency Review remains mandatory for any dependency-changing PR after it targets main."
+          echo "::notice title=Stacked PR dependency guard::No dependency changes detected. Full Dependency Review remains mandatory for future dependency-changing pull requests after they target main."
