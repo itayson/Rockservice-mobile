@@ -7,6 +7,9 @@
         android:theme="@style/Theme.RockService"
         android:usesCleartextTraffic="false">
         <activity
+            android:name=".DiagnosticsLogActivity"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:exported="false" />
         <activity
