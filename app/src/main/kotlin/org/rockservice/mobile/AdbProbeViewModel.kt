@@ -5,14 +5,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.rockservice.core.common.diagnostics.DiagnosticEventRecorder
 import org.rockservice.core.common.diagnostics.DiagnosticSeverity
@@ -67,13 +71,14 @@ internal data class AdbProbeScreenState(
 /** Enumerates canonical ADB USB targets and performs only the CNXN/AUTH handshake. */
 internal class AdbProbeViewModel(
     private val appContext: Context,
-    private val usbBackend: AndroidUsbHostBackend,
     private val diagnosticsRecorder: DiagnosticEventRecorder = AppDiagnostics.recorder,
 ) : ViewModel() {
+    private val usbBackend = AndroidUsbHostBackend(appContext)
     private val transportFactory = AndroidAdbUsbTransportFactory(appContext)
     private val identityStore = AdbAppIdentityStore(appContext)
     private val mutableState = MutableStateFlow(AdbProbeScreenState())
     private val operationGeneration = AtomicLong(0L)
+    private val started = AtomicBoolean(false)
     private val transportLock = Any()
     private var scanJob: Job? = null
     private var probeJob: Job? = null
@@ -82,6 +87,11 @@ internal class AdbProbeViewModel(
     private var activeTransport: AdbMessageTransport? = null
 
     val state = mutableState.asStateFlow()
+
+    /** Starts the initial scan exactly once for this ViewModel lifetime. */
+    fun start() {
+        if (started.compareAndSet(false, true)) refresh()
+    }
 
     fun refresh() {
         val generation = operationGeneration.incrementAndGet()
@@ -295,21 +305,69 @@ internal class AdbProbeViewModel(
     private suspend fun closeActiveTransport() {
         val transport = synchronized(transportLock) {
             activeTransport.also { activeTransport = null }
-        }
-        runCatching { transport?.close() }
+        } ?: return
+        closeTransportSafely(transport, "active")
     }
 
     private suspend fun closeOwnedTransport(transport: AdbMessageTransport) {
         synchronized(transportLock) {
             if (activeTransport === transport) activeTransport = null
         }
-        runCatching { transport.close() }
+        closeTransportSafely(transport, "owned")
+    }
+
+    private suspend fun closeTransportSafely(
+        transport: AdbMessageTransport,
+        ownership: String,
+    ) {
+        try {
+            withContext(NonCancellable) {
+                transport.close()
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            diagnosticsRecorder.record(
+                severity = DiagnosticSeverity.ERROR,
+                component = "adb",
+                action = "transport.close.failed",
+                message = "Falha ao fechar transporte ADB de forma deterministica.",
+                metadata = mapOf(
+                    "ownership" to ownership,
+                    "errorType" to error.javaClass.simpleName,
+                ),
+            )
+        }
+    }
+
+    private suspend fun closeBackendSafely() {
+        try {
+            withContext(NonCancellable) {
+                usbBackend.close()
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            diagnosticsRecorder.record(
+                severity = DiagnosticSeverity.ERROR,
+                component = "adb",
+                action = "backend.close.failed",
+                message = "Falha ao fechar backend USB do probe ADB.",
+                metadata = mapOf("errorType" to error.javaClass.simpleName),
+            )
+        }
     }
 
     override fun onCleared() {
         operationGeneration.incrementAndGet()
         scanJob?.cancel()
         probeJob?.cancel()
+        runBlocking {
+            withContext(NonCancellable + Dispatchers.IO) {
+                closeActiveTransport()
+                closeBackendSafely()
+            }
+        }
         super.onCleared()
     }
 
@@ -342,14 +400,10 @@ internal class AdbProbeViewModel(
 
 internal class AdbProbeViewModelFactory(
     private val context: Context,
-    private val usbBackend: AndroidUsbHostBackend,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         require(modelClass.isAssignableFrom(AdbProbeViewModel::class.java))
-        return AdbProbeViewModel(
-            appContext = context.applicationContext,
-            usbBackend = usbBackend,
-        ) as T
+        return AdbProbeViewModel(appContext = context.applicationContext) as T
     }
 }
