@@ -10,7 +10,7 @@ import org.junit.Test
 
 class AdbHandshakeStateMachineTest {
     @Test
-    fun `start emits modern CNXN and direct peer CNXN completes handshake`() {
+    fun `start emits conservative modern CNXN and direct peer CNXN completes handshake`() {
         val identity = FakeIdentity()
         val machine = AdbHandshakeStateMachine(identity)
 
@@ -19,10 +19,7 @@ class AdbHandshakeStateMachineTest {
 
         assertEquals(AdbCommand.CNXN, start.outbound?.command)
         assertEquals(AdbHandshakeState.AwaitingConnectionOrAuth, start.state)
-        assertArrayEquals(
-            "host::features=shell_v2,cmd;".toByteArray(),
-            start.outbound?.payload,
-        )
+        assertArrayEquals("host::".toByteArray(), start.outbound?.payload)
         assertNotEquals(0, start.outbound?.payload?.last()?.toInt())
         assertTrue(connected.state is AdbHandshakeState.Connected)
         assertNull(connected.outbound)
