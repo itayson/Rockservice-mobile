@@ -4,12 +4,14 @@ package org.rockservice.feature.firmware
 sealed interface AndroidSuperLogicalExtentPlan {
     val lengthBytes: Long
 
+    /** Copies bytes from one validated physical block-device range. */
     data class Linear(
         val blockDeviceIndex: Int,
         val sourceOffsetBytes: Long,
         override val lengthBytes: Long,
     ) : AndroidSuperLogicalExtentPlan
 
+    /** Materializes a logical zero-filled range without reading source bytes. */
     data class Zero(
         override val lengthBytes: Long,
     ) : AndroidSuperLogicalExtentPlan
@@ -26,7 +28,7 @@ data class AndroidSuperLogicalPartitionPlan(
  * Converts validated liblp tables into immutable logical-partition read plans.
  *
  * This mapper performs no file I/O. It accepts only table relationships already parsed into
- * AndroidSuperMetadata and revalidates every index plus all sector-to-byte arithmetic.
+ * [AndroidSuperMetadata] and revalidates every index plus all sector-to-byte arithmetic.
  */
 class AndroidSuperLogicalPartitionMapper {
     /** Maps every partition in table order. */
@@ -39,7 +41,7 @@ class AndroidSuperLogicalPartitionMapper {
         partitionName: String,
     ): AndroidSuperLogicalPartitionPlan {
         require(partitionName.isNotBlank()) { "O nome da partição lógica não pode ser vazio." }
-        val matches = metadata.partitions.filter { partition -> partition.component1() == partitionName }
+        val matches = metadata.partitions.filter { partition -> partition.name == partitionName }
         require(matches.size == 1) {
             if (matches.isEmpty()) {
                 "Partição lógica '$partitionName' não encontrada na metadata liblp."
@@ -52,85 +54,111 @@ class AndroidSuperLogicalPartitionMapper {
 
     private fun mapPartition(
         metadata: AndroidSuperMetadata,
-        partition: AndroidSuperPartition,
+        partition: AndroidLogicalPartitionMetadata,
     ): AndroidSuperLogicalPartitionPlan {
-        val name = partition.component1()
-        val firstExtentIndex = partition.component3().toLong()
-        val extentCount = partition.component4().toLong()
-        require(firstExtentIndex >= 0L) { "Partição '$name' possui first_extent_index negativo." }
-        require(extentCount >= 0L) { "Partição '$name' possui quantidade de extents negativa." }
-
+        val firstExtentIndex = partition.firstExtentIndex.toLong()
+        val extentCount = partition.extentCount.toLong()
         val endExclusive = checkedAdd(
             firstExtentIndex,
             extentCount,
-            "Faixa de extents da partição '$name'",
+            "Faixa de extents da partição '${partition.name}'",
         )
-        require(endExclusive <= metadata.extents.size.toLong()) {
-            "Partição '$name' referencia extents [$firstExtentIndex, $endExclusive), mas a tabela possui " +
+        require(firstExtentIndex <= metadata.extents.size.toLong() && endExclusive <= metadata.extents.size.toLong()) {
+            "Partição '${partition.name}' referencia extents [$firstExtentIndex, $endExclusive), mas a tabela possui " +
                 "${metadata.extents.size} entradas."
         }
 
-        val plans = ArrayList<AndroidSuperLogicalExtentPlan>(extentCount.toInt())
+        val plans = ArrayList<AndroidSuperLogicalExtentPlan>(partition.extentCount)
         var partitionSizeBytes = 0L
-        for (index in firstExtentIndex until endExclusive) {
-            val extent = metadata.extents[index.toInt()]
-            val sectorCount = extent.component1().toLong()
-            val targetType = extent.component2()
-            val targetData = extent.component3().toLong()
-            val targetSource = extent.component4().toLong()
-
-            require(sectorCount >= 0L) {
-                "Extent $index da partição '$name' possui quantidade de setores negativa."
-            }
+        for (index in partition.firstExtentIndex until endExclusive.toInt()) {
+            val extent = metadata.extents[index]
             val lengthBytes = checkedMultiply(
-                sectorCount,
+                extent.sectorCount,
                 LOGICAL_SECTOR_SIZE_BYTES,
-                "Tamanho do extent $index da partição '$name'",
+                "Tamanho do extent $index da partição '${partition.name}'",
             )
 
-            val plan = when (targetType.name) {
-                "LINEAR" -> {
-                    require(targetSource in metadata.blockDevices.indices.map(Int::toLong)) {
-                        "Extent $index da partição '$name' referencia block device $targetSource, mas existem " +
-                            "${metadata.blockDevices.size} dispositivos."
+            val plan = when (extent.targetType) {
+                TARGET_TYPE_LINEAR -> mapLinearExtent(
+                    metadata = metadata,
+                    partitionName = partition.name,
+                    extentIndex = index,
+                    extent = extent,
+                    lengthBytes = lengthBytes,
+                )
+
+                TARGET_TYPE_ZERO -> {
+                    require(extent.targetData == 0L && extent.targetSource == 0) {
+                        "Extent ZERO $index da partição '${partition.name}' deve ter target_data e target_source iguais a zero."
                     }
-                    require(targetData >= 0L) {
-                        "Extent LINEAR $index da partição '$name' possui setor de origem negativo."
-                    }
-                    AndroidSuperLogicalExtentPlan.Linear(
-                        blockDeviceIndex = targetSource.toInt(),
-                        sourceOffsetBytes = checkedMultiply(
-                            targetData,
-                            LOGICAL_SECTOR_SIZE_BYTES,
-                            "Offset do extent $index da partição '$name'",
-                        ),
-                        lengthBytes = lengthBytes,
-                    )
+                    AndroidSuperLogicalExtentPlan.Zero(lengthBytes = lengthBytes)
                 }
 
-                "ZERO" -> AndroidSuperLogicalExtentPlan.Zero(lengthBytes = lengthBytes)
-
                 else -> throw IllegalArgumentException(
-                    "Extent $index da partição '$name' usa target não suportado: ${targetType.name}.",
+                    "Extent $index da partição '${partition.name}' usa target não suportado: ${extent.targetType}.",
                 )
             }
             plans += plan
             partitionSizeBytes = checkedAdd(
                 partitionSizeBytes,
                 lengthBytes,
-                "Tamanho lógico da partição '$name'",
+                "Tamanho lógico da partição '${partition.name}'",
             )
         }
 
+        require(partitionSizeBytes == partition.logicalSizeBytes) {
+            "Plano da partição '${partition.name}' totaliza $partitionSizeBytes bytes, mas a metadata validada declara " +
+                "${partition.logicalSizeBytes} bytes."
+        }
+
         return AndroidSuperLogicalPartitionPlan(
-            name = name,
+            name = partition.name,
             sizeBytes = partitionSizeBytes,
             extents = plans.toList(),
         )
     }
 
+    private fun mapLinearExtent(
+        metadata: AndroidSuperMetadata,
+        partitionName: String,
+        extentIndex: Int,
+        extent: AndroidLogicalExtentMetadata,
+        lengthBytes: Long,
+    ): AndroidSuperLogicalExtentPlan.Linear {
+        require(extent.targetSource in metadata.blockDevices.indices) {
+            "Extent $extentIndex da partição '$partitionName' referencia block device ${extent.targetSource}, mas existem " +
+                "${metadata.blockDevices.size} dispositivos."
+        }
+        val device = metadata.blockDevices[extent.targetSource]
+        require(extent.targetData >= device.firstLogicalSector) {
+            "Extent LINEAR $extentIndex da partição '$partitionName' inicia antes do primeiro setor lógico de " +
+                "${device.partitionName}."
+        }
+        val sourceOffsetBytes = checkedMultiply(
+            extent.targetData,
+            LOGICAL_SECTOR_SIZE_BYTES,
+            "Offset do extent $extentIndex da partição '$partitionName'",
+        )
+        val sourceEndBytes = checkedAdd(
+            sourceOffsetBytes,
+            lengthBytes,
+            "Fim do extent $extentIndex da partição '$partitionName'",
+        )
+        require(sourceEndBytes <= device.sizeBytes) {
+            "Extent LINEAR $extentIndex da partição '$partitionName' excede o tamanho do block device " +
+                "${device.partitionName}."
+        }
+        return AndroidSuperLogicalExtentPlan.Linear(
+            blockDeviceIndex = extent.targetSource,
+            sourceOffsetBytes = sourceOffsetBytes,
+            lengthBytes = lengthBytes,
+        )
+    }
+
     private companion object {
         const val LOGICAL_SECTOR_SIZE_BYTES = 512L
+        const val TARGET_TYPE_LINEAR = 0
+        const val TARGET_TYPE_ZERO = 1
     }
 }
 
