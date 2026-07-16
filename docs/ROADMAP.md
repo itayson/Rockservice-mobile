@@ -15,7 +15,7 @@ Entregue:
 
 ## Fase 1 — Base do aplicativo
 
-**Estado: em andamento.**
+**Estado: base operacional concluída; evolução contínua por feature.**
 
 Entregue:
 
@@ -24,57 +24,74 @@ Entregue:
 - painel de diagnóstico USB;
 - seleção explícita de alvo;
 - lifecycle USB e attach/detach;
-- ViewModel e coordenador testável para remover o estado operacional USB da `Activity`;
+- ViewModels/coordenadores para remover estado operacional das `Activity`;
 - relatório sanitizado de validação de hardware com exportação controlada;
-- invalidação de jobs e resultados obsoletos ao trocar o alvo;
+- invalidação de jobs e resultados obsoletos ao trocar alvo/origem;
 - log técnico estruturado, sanitizado e limitado em memória;
-- tela de consulta, limpeza e exportação manual em JSONL sem permissão ampla de armazenamento.
+- tela de consulta, limpeza e exportação manual em JSONL sem permissão ampla de armazenamento;
+- integração de eventos técnicos nos fluxos principais de firmware, Rockchip e ADB.
 
-Pendente:
+Pendente apenas quando surgir requisito concreto:
 
-- integração do log estruturado com fluxos adicionais de ADB e operações críticas;
-- casos de uso adicionais para futuros fluxos críticos;
-- banco local somente quando existir requisito explícito de persistência.
+- persistência local estruturada além dos arquivos privados estritamente necessários;
+- novos casos de uso compartilhados para futuras operações críticas.
 
 ## Fase 2 — Laboratório de firmware
 
-**Estado: parcialmente implementada.**
+**Estado: núcleo de análise e extração controlada implementado.**
 
 Entregue:
 
 - identificação de formatos por assinaturas;
-- leitura em streaming;
-- SHA-256;
+- leitura em streaming e SHA-256 integral;
 - limites para arquivos e headers truncados;
 - parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos;
 - expansão Android Sparse em streaming com `RAW`, `FILL`, `DONT_CARE`, CRC32, SHA-256 e limites defensivos;
-- fluxo Android explícito para selecionar o destino da expansão Sparse, bloquear origem=destino e sinalizar saída parcial em falhas;
-- parser estrutural Android Boot Image v0-v4 com validação de layout, alinhamentos, offsets e truncamento;
-- extração streaming e hash-bound de payloads Android Boot Image sem padding;
-- tela dedicada para revalidar a origem e exportar uma seção Boot Image por vez, com `HEADER` bloqueado e aviso de destino parcial;
-- parser raw de metadata de partições dinâmicas Android `super`/liblp com validação de geometria, checksums, tabelas e referências cruzadas.
+- fluxo Android explícito para selecionar destino da expansão Sparse, bloquear origem=destino e sinalizar saída parcial;
+- parser Android Boot Image v0-v4 com layout, alinhamentos, offsets e truncamento;
+- extração streaming/hash-bound de payloads Boot Image sem padding;
+- tela dedicada para revalidar a origem e exportar uma seção Boot Image por vez, com `HEADER` bloqueado;
+- cancelamento cooperativo e serialização das extrações Boot Image;
+- parser raw de metadata Android `super`/liblp com geometria, checksums, tabelas e referências cruzadas;
+- análise de metadata liblp diretamente de `super.img` Android Sparse por decodificação limitada de prefixo;
+- mapper imutável de partições lógicas com extents `LINEAR`/`ZERO` e aritmética fail-closed;
+- exportador streaming de partições lógicas com SHA-256, short-read fail-closed e checkpoints;
+- tela Android para exportar uma partição lógica por vez de `super.img` raw com revalidação SHA-256 antes/depois;
+- inspeção estrutural limitada de ext4, F2FS, EROFS e SquashFS sem montagem;
+- integração das evidências de filesystem raw ao relatório técnico.
 
-Pendente:
+Próximas evoluções:
 
-- tradução segura de `super.img` sparse para o parser raw;
-- mapeamento e extração controlada de partições lógicas;
-- análise estrutural aprofundada de imagens raw/filesystems;
-- empacotamento validado.
+1. permitir leitura de ranges diretamente de um `super.img` sparse sem exigir expansão completa para RAW, mantendo limites e validação estrutural;
+2. aprofundar parsers de filesystems somente quando houver caso de uso de leitura segura de arquivos internos;
+3. implementar empacotamento/reempacotamento apenas com formato de saída claramente definido, validação round-trip e nenhum destino implícito.
 
 ## Fase 3 — ADB e diagnóstico
 
-**Estado: não iniciada.**
+**Estado: transporte, autenticação e probe de conexão implementados; serviços remotos permanecem bloqueados por allowlist futura.**
 
-Planejado:
+Entregue:
 
-- ADB autorizado;
-- coleta de logs;
-- saúde do dispositivo;
-- rede e armazenamento Android.
+- codec defensivo `SYNC/CNXN/AUTH/OPEN/OKAY/CLSE/WRTE`;
+- framing, magic, checksum legado, uint32 e limites de payload;
+- identidade RSA 2048 compatível com ADB AUTH;
+- máquina de estados fail-closed para `CNXN/AUTH`;
+- transporte Android USB de frames ADB com alvo e topologia revalidados;
+- solicitação explícita de permissão USB com revalidação após o resultado;
+- identidade ADB persistida no armazenamento privado `noBackupFilesDir` do aplicativo;
+- tela de validação de conexão/autorização ADB que não abre shell nem serviço remoto automaticamente.
+
+Próximos gates:
+
+1. validar o probe em diferentes dispositivos Android autorizados e versões de adbd;
+2. implementar uma camada de streams ADB testável para `OPEN/OKAY/WRTE/CLSE`;
+3. expor apenas serviços diagnósticos explicitamente allowlisted;
+4. adicionar coleta sanitizada de propriedades/saúde/logs sem permitir comando arbitrário pela UI padrão;
+5. manter ações mutáveis separadas e sujeitas a confirmação explícita.
 
 ## Fase 4 — Rockchip somente leitura
 
-**Estado: em andamento. Transporte real, baseline ativo e primeira leitura LBA limitada já foram validados em hardware autorizado; a expansão continua protegida por gates.**
+**Estado: em andamento. Transporte real, baseline ativo e primeira leitura LBA limitada já foram validados em hardware autorizado; expansão continua protegida por gates físicos.**
 
 Entregue:
 
@@ -92,16 +109,15 @@ Entregue:
 - `READ_LBA` limitado localmente a no máximo 32 setores por transação;
 - prova física e interface controlada para leitura fixa de exatamente 1 setor no LBA 0;
 - proteção contra resultados obsoletos, leituras concorrentes e repetição após falha que exige reconexão;
-- plano preparatório e parser puro para inspeção fixa de LBA 0–1 e detecção sanitizada de assinaturas MBR/GPT;
-- integração da inspeção fixa de 2 setores no mesmo cliente de transporte somente leitura, compartilhando o gate global de sessão e permanecendo fora da UI padrão até validação física de `#35`.
+- plano/parser para inspeção fixa de LBA 0–1 e detecção sanitizada de assinaturas MBR/GPT;
+- integração interna da inspeção fixa de 2 setores no mesmo cliente somente leitura, ainda fora da UI padrão até validação física de `#35`.
 
 Próximos gates:
 
-1. concluir a matriz de hardware de `#18`, incluindo dispositivo não-Rockchip e evidência explícita de attach/detach;
-2. concluir formalmente o checklist de `#19`, cujo transporte e baseline ativo já possuem evidência em hardware autorizado;
-3. validar em hardware autorizado a inspeção fixa de exatamente 2 setores (LBA 0–1) de `#35`, sem LBA configurável e sem persistência automática de bytes brutos;
-4. somente após `#35`, projetar leitura estritamente limitada das estruturas necessárias para mapear tabelas de partição, com limites derivados e validados;
-5. manter backup de partições bloqueado até existir mapeamento confiável, validação de tamanho/faixa, política de destino, retomada segura e verificação de integridade.
+1. concluir a matriz de hardware de `#18`, incluindo dispositivo não-Rockchip e attach/detach documentado;
+2. validar em hardware autorizado a inspeção fixa de exatamente 2 setores de `#35`;
+3. somente depois ampliar leituras físicas com faixas derivadas de metadata validada, política de destino e verificação de integridade;
+4. manter backup físico genérico bloqueado até existirem retomada segura, limites testados e evidência de hardware para cada classe suportada.
 
 ## Fase 5 — Gravação experimental
 
@@ -136,8 +152,10 @@ Loader/Maskrom, se forem técnica e legalmente viáveis, devem usar apenas loade
 
 **Estado: futuro.**
 
-API de plugins, USB/serial e documentação para fabricantes.
+API de plugins, USB/serial e documentação para fabricantes continuam fora do corte `0.2.0-alpha01`.
 
 ## Release
 
-A infraestrutura de release assinado, SBOM, provenance e publicação protegida está implementada. A ativação operacional permanece bloqueada pelos gates externos rastreados em `#20`.
+A infraestrutura de release assinada, SBOM, provenance, checksums e publicação protegida está implementada. A ativação operacional permanece bloqueada pelos gates externos de `#20`.
+
+Até esses gates serem concluídos, o artefato distribuível para testes é o APK `debug` gerado pelo CI. Ele é instalável, mas não representa uma release de produção assinada.
