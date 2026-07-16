@@ -4,6 +4,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -26,7 +27,19 @@ class AdbProtocolCodecTest {
         assertEquals(4096, buffer.getInt(8))
         assertEquals(message.payload.size, buffer.getInt(12))
         assertEquals(0xB1A7B1BC.toInt(), buffer.getInt(20))
-        assertMessageEquals(message, decoded)
+        assertEquals(message, decoded)
+    }
+
+    @Test
+    fun `message equality and hash code compare payload contents`() {
+        val first = AdbMessage(AdbCommand.WRTE, 1, 2, byteArrayOf(1, 2, 3))
+        val second = AdbMessage(AdbCommand.WRTE, 1, 2, byteArrayOf(1, 2, 3))
+        val different = AdbMessage(AdbCommand.WRTE, 1, 2, byteArrayOf(1, 2, 4))
+
+        assertEquals(first, second)
+        assertEquals(first.hashCode(), second.hashCode())
+        assertNotEquals(first, different)
+        assertEquals(1, hashSetOf(first, second).size)
     }
 
     @Test
@@ -75,7 +88,7 @@ class AdbProtocolCodecTest {
         )
 
         assertEquals(0xFFFF_FFFFL, header.arg0)
-        assertMessageEquals(original, decoded)
+        assertEquals(original, decoded)
     }
 
     @Test
@@ -151,20 +164,58 @@ class AdbProtocolCodecTest {
     }
 
     @Test
+    fun `connect rejects protocol version outside uint32`() {
+        expectIllegalArgument {
+            AdbProtocolCodec.connect("host::", protocolVersion = -1)
+        }
+        expectIllegalArgument {
+            AdbProtocolCodec.connect("host::", protocolVersion = 0x1_0000_0000L)
+        }
+    }
+
+    @Test
+    fun `connect rejects max data outside local bounds`() {
+        expectIllegalArgument {
+            AdbProtocolCodec.connect("host::", maxDataBytes = 0)
+        }
+        expectIllegalArgument {
+            AdbProtocolCodec.connect(
+                "host::",
+                maxDataBytes = AdbProtocolCodec.MAXIMUM_PAYLOAD_BYTES.toLong() + 1,
+            )
+        }
+    }
+
+    @Test
+    fun `open rejects invalid local id`() {
+        expectIllegalArgument { AdbProtocolCodec.open(localId = 0, service = "shell:id") }
+        expectIllegalArgument { AdbProtocolCodec.open(localId = 0x1_0000_0000L, service = "shell:id") }
+    }
+
+    @Test
+    fun `auth signature rejects empty payload`() {
+        expectIllegalArgument { AdbProtocolCodec.authSignature(ByteArray(0)) }
+    }
+
+    @Test
+    fun `null terminated builders reject blank nul and oversized strings`() {
+        expectIllegalArgument { AdbProtocolCodec.connect("   ") }
+        expectIllegalArgument { AdbProtocolCodec.connect("host::bad\u0000banner") }
+        expectIllegalArgument { AdbProtocolCodec.open(1, "") }
+        expectIllegalArgument { AdbProtocolCodec.open(1, "shell:\u0000id") }
+        expectIllegalArgument {
+            AdbProtocolCodec.connect("x".repeat(AdbProtocolCodec.MAXIMUM_PAYLOAD_BYTES))
+        }
+    }
+
+    @Test
     fun `all supported commands round trip`() {
         AdbCommand.entries.forEachIndexed { index, command ->
             val payload = if (command == AdbCommand.SYNC) ByteArray(0) else byteArrayOf(index.toByte())
             val message = AdbMessage(command, arg0 = index.toLong(), arg1 = (index + 1).toLong(), payload = payload)
             val decoded = AdbProtocolCodec.decode(AdbProtocolCodec.encode(message))
-            assertMessageEquals(message, decoded)
+            assertEquals(message, decoded)
         }
-    }
-
-    private fun assertMessageEquals(expected: AdbMessage, actual: AdbMessage) {
-        assertEquals(expected.command, actual.command)
-        assertEquals(expected.arg0, actual.arg0)
-        assertEquals(expected.arg1, actual.arg1)
-        assertArrayEquals(expected.payload, actual.payload)
     }
 
     private fun expectIllegalArgument(block: () -> Unit): IllegalArgumentException = try {
