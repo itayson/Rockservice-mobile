@@ -117,6 +117,19 @@ internal object FirmwareLabReportSections {
         )
     }
 
+    fun rawFilesystem(inspection: RawFilesystemInspection): FirmwareLabSection = FirmwareLabSection(
+        title = "Filesystem raw detectado",
+        lines = buildList {
+            add("Tipo: ${inspection.type}")
+            add("Bytes do prefixo inspecionados: ${inspection.bytesInspected}")
+            inspection.blockSizeBytes?.let { blockSize -> add("Tamanho de bloco validado: $blockSize bytes") }
+            add("SHA-256 do prefixo inspecionado: ${inspection.prefixSha256}")
+            add("Evidencia estrutural: ${inspection.detail}")
+            add("Observacao: o SHA-256 acima cobre somente o prefixo; o SHA-256 integral da imagem permanece no Resumo.")
+            add("Nenhum filesystem foi montado e nenhum arquivo interno foi extraido.")
+        },
+    )
+
     private fun <T> boundedLines(
         values: List<T>,
         maximumListedEntries: Int,
