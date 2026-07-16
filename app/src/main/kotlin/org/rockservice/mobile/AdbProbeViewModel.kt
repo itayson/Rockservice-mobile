@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.rockservice.core.common.diagnostics.DiagnosticEventRecorder
@@ -95,6 +97,7 @@ internal class AdbProbeViewModel(
     private val diagnosticsGeneration = AtomicLong(0L)
     private val started = AtomicBoolean(false)
     private val connectionLock = Any()
+    private val connectionLifecycleMutex = Mutex()
     private var scanJob: Job? = null
     private var probeJob: Job? = null
     private var diagnosticsJob: Job? = null
@@ -439,15 +442,17 @@ internal class AdbProbeViewModel(
         synchronized(connectionLock) { activeSession === session }
 
     private suspend fun closeActiveConnection() {
-        val resources = synchronized(connectionLock) {
-            val session = activeSession
-            val transport = activeTransport
-            activeSession = null
-            activeTransport = null
-            session to transport
+        connectionLifecycleMutex.withLock {
+            val resources = synchronized(connectionLock) {
+                val session = activeSession
+                val transport = activeTransport
+                activeSession = null
+                activeTransport = null
+                session to transport
+            }
+            resources.first?.let { session -> closeSessionSafely(session, "active") }
+            resources.second?.let { transport -> closeTransportSafely(transport, "fallback") }
         }
-        resources.first?.let { session -> closeSessionSafely(session, "active") }
-        resources.second?.let { transport -> closeTransportSafely(transport, "fallback") }
     }
 
     private suspend fun closeOwnedTransport(transport: AdbMessageTransport) {
