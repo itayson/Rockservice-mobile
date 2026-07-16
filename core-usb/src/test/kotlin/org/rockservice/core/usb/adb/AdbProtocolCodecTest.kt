@@ -12,7 +12,7 @@ import org.junit.Test
 class AdbProtocolCodecTest {
     @Test
     fun `connect frame uses expected CNXN wire fields and modern non terminated banner`() {
-        val banner = "host::features=shell_v2;"
+        val banner = "host::"
         val message = AdbProtocolCodec.connect(
             banner = banner,
             protocolVersion = 0x01000001,
@@ -72,6 +72,21 @@ class AdbProtocolCodecTest {
         assertArrayEquals(byteArrayOf(1, 2, 3), signature.payload)
         assertEquals(AdbAuthType.RSA_PUBLIC_KEY.wireValue, publicKey.arg0)
         assertEquals(0, publicKey.payload.last().toInt())
+    }
+
+    @Test
+    fun `auth builders enforce pre negotiation handshake payload limit`() {
+        val maximumPublicKey = AdbProtocolCodec.authPublicKey(
+            "x".repeat(AdbProtocolCodec.MAXIMUM_HANDSHAKE_PAYLOAD_BYTES - 1),
+        )
+
+        assertEquals(AdbProtocolCodec.MAXIMUM_HANDSHAKE_PAYLOAD_BYTES, maximumPublicKey.payload.size)
+        expectIllegalArgument {
+            AdbProtocolCodec.authPublicKey("x".repeat(AdbProtocolCodec.MAXIMUM_HANDSHAKE_PAYLOAD_BYTES))
+        }
+        expectIllegalArgument {
+            AdbProtocolCodec.authSignature(ByteArray(AdbProtocolCodec.MAXIMUM_HANDSHAKE_PAYLOAD_BYTES + 1))
+        }
     }
 
     @Test
