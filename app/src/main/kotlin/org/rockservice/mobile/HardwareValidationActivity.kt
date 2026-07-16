@@ -384,7 +384,7 @@ class HardwareValidationActivity : ComponentActivity() {
                                                         }
                                                     }
                                                 },
-                                                enabled = !lbaRunning,
+                                                enabled = !lbaRunning && lbaReport?.requiresReconnect != true,
                                                 modifier = Modifier.fillMaxWidth(),
                                             ) {
                                                 Text("Testar leitura limitada de 1 setor (LBA 0)")
