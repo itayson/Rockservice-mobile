@@ -213,10 +213,6 @@ internal class AdbProbeViewModel(
                         val transition = machine.receive(incoming)
                         when (val handshakeState = transition.state) {
                             is AdbHandshakeState.Connected -> {
-                                if (operationGeneration.get() != generation) {
-                                    throw CancellationException("A operacao ADB foi substituida antes da sessao ser promovida.")
-                                }
-
                                 val session = AdbSessionController(
                                     transport = transport,
                                     peer = handshakeState.peer,
@@ -224,31 +220,36 @@ internal class AdbProbeViewModel(
                                     closeTransportOnClose = true,
                                 )
                                 session.start()
-                                if (!promoteActiveTransportToSession(transport, session)) {
+                                val connectedState = AdbProbeOperationState.Connected(
+                                    transportId = transportId,
+                                    protocolVersion = handshakeState.peer.protocolVersion,
+                                    maxDataBytes = handshakeState.peer.maxDataBytes,
+                                    banner = handshakeState.peer.banner,
+                                )
+                                if (!promoteAndPublishConnected(
+                                        generation = generation,
+                                        transport = transport,
+                                        session = session,
+                                        connectedState = connectedState,
+                                    )
+                                ) {
                                     session.close()
-                                    throw CancellationException("O transporte ADB deixou de ser o alvo ativo antes da promocao da sessao.")
+                                    throw CancellationException("A operacao ADB foi substituida antes da promocao da sessao.")
                                 }
                                 ownedTransport = null
 
-                                mutableState.value = mutableState.value.copy(
-                                    operation = AdbProbeOperationState.Connected(
-                                        transportId = transportId,
-                                        protocolVersion = handshakeState.peer.protocolVersion,
-                                        maxDataBytes = handshakeState.peer.maxDataBytes,
-                                        banner = handshakeState.peer.banner,
-                                    ),
-                                    diagnostics = AdbProbeDiagnosticsState.Idle,
-                                )
-                                diagnosticsRecorder.record(
-                                    severity = DiagnosticSeverity.INFO,
-                                    component = "adb",
-                                    action = "handshake.connected",
-                                    message = "Handshake ADB concluido; sessao autenticada disponivel para acoes explicitas.",
-                                    metadata = mapOf(
-                                        "protocolVersion" to handshakeState.peer.protocolVersion.toString(),
-                                        "maxDataBytes" to handshakeState.peer.maxDataBytes.toString(),
-                                    ),
-                                )
+                                if (operationGeneration.get() == generation) {
+                                    diagnosticsRecorder.record(
+                                        severity = DiagnosticSeverity.INFO,
+                                        component = "adb",
+                                        action = "handshake.connected",
+                                        message = "Handshake ADB concluido; sessao autenticada disponivel para acoes explicitas.",
+                                        metadata = mapOf(
+                                            "protocolVersion" to handshakeState.peer.protocolVersion.toString(),
+                                            "maxDataBytes" to handshakeState.peer.maxDataBytes.toString(),
+                                        ),
+                                    )
+                                }
                                 return@withTimeout
                             }
 
@@ -430,16 +431,26 @@ internal class AdbProbeViewModel(
         }
     }
 
-    private fun promoteActiveTransportToSession(
+    private fun promoteAndPublishConnected(
+        generation: Long,
         transport: AdbMessageTransport,
         session: AdbSessionController,
+        connectedState: AdbProbeOperationState.Connected,
     ): Boolean = synchronized(connectionLock) {
-        if (activeTransport !== transport || activeSession != null) {
+        if (
+            operationGeneration.get() != generation ||
+            activeTransport !== transport ||
+            activeSession != null
+        ) {
             false
         } else {
             // The session is the sole logical I/O owner. Keep the direct transport reference only
             // as an idempotent fallback close handle if session.close() itself fails unexpectedly.
             activeSession = session
+            mutableState.value = mutableState.value.copy(
+                operation = connectedState,
+                diagnostics = AdbProbeDiagnosticsState.Idle,
+            )
             true
         }
     }
@@ -470,7 +481,7 @@ internal class AdbProbeViewModel(
             if (resources.isEmpty) {
                 previousClose
             } else {
-                RESOURCE_CLEANUP_SCOPE.launch(start = CoroutineStart.LAZY) {
+                resourceCleanupScope.launch(start = CoroutineStart.LAZY) {
                     previousClose?.join()
                     closeCapturedConnection(resources)
                 }.also { job ->
@@ -502,8 +513,10 @@ internal class AdbProbeViewModel(
         synchronized(connectionLock) {
             if (activeTransport === transport && activeSession == null) activeTransport = null
         }
-        connectionLifecycleMutex.withLock {
-            closeTransportSafely(transport, "owned")
+        withContext(NonCancellable) {
+            connectionLifecycleMutex.withLock {
+                closeTransportSafely(transport, "owned")
+            }
         }
     }
 
@@ -580,7 +593,7 @@ internal class AdbProbeViewModel(
         probeJob?.cancel()
         diagnosticsJob?.cancel()
         val closeJob = scheduleActiveConnectionClose()
-        RESOURCE_CLEANUP_SCOPE.launch {
+        resourceCleanupScope.launch {
             closeJob?.join()
             closeBackendSafely()
         }
@@ -607,7 +620,7 @@ internal class AdbProbeViewModel(
     }
 
     private companion object {
-        val RESOURCE_CLEANUP_SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val resourceCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         const val USB_PERMISSION_TIMEOUT_MILLIS = 30_000L
         const val HANDSHAKE_TOTAL_TIMEOUT_MILLIS = 45_000L
         const val MESSAGE_TIMEOUT_MILLIS = 10_000L
