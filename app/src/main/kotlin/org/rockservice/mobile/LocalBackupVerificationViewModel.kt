@@ -105,6 +105,8 @@ class LocalBackupVerificationViewModel : ViewModel() {
                 throw cancelled
             } catch (error: IOException) {
                 error.message ?: "Falha de leitura ao verificar o arquivo local."
+            } catch (error: SecurityException) {
+                "O aplicativo não tem permissão para ler o arquivo selecionado."
             } catch (error: IllegalArgumentException) {
                 error.message ?: "Os metadados informados são inválidos."
             }
