@@ -91,6 +91,12 @@ private data class AdbConnectionResources(
         get() = session == null && transport == null
 }
 
+private data class AdbDiagnosticsRequest(
+    val operationGeneration: Long,
+    val collectionGeneration: Long,
+    val session: AdbSessionController,
+)
+
 /**
  * Enumerates canonical ADB USB targets, performs CNXN/AUTH, and retains an authenticated session
  * only after explicit user initiation. Diagnostic services are opened only by [collectDiagnostics].
@@ -127,12 +133,15 @@ internal class AdbProbeViewModel(
     }
 
     fun refresh() {
-        val generation = operationGeneration.incrementAndGet()
-        diagnosticsGeneration.incrementAndGet()
+        val generation = synchronized(connectionLock) {
+            val nextGeneration = operationGeneration.incrementAndGet()
+            diagnosticsGeneration.incrementAndGet()
+            mutableState.value = AdbProbeScreenState(scan = AdbProbeScanState.Loading)
+            nextGeneration
+        }
         probeJob?.cancel()
         diagnosticsJob?.cancel()
         scanJob?.cancel()
-        mutableState.value = AdbProbeScreenState(scan = AdbProbeScanState.Loading)
 
         scanJob = viewModelScope.launch(Dispatchers.IO) {
             closeActiveConnection()
@@ -150,37 +159,39 @@ internal class AdbProbeViewModel(
                         )
                     }
                     .sortedBy { candidate -> candidate.displayName.lowercase() }
-                if (operationGeneration.get() == generation) {
-                    mutableState.value = AdbProbeScreenState(
-                        scan = AdbProbeScanState.Ready(candidates),
-                        operation = AdbProbeOperationState.Idle,
-                    )
-                }
+                publishScanIfCurrent(
+                    generation = generation,
+                    scan = AdbProbeScanState.Ready(candidates),
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (operationGeneration.get() == generation) {
-                    mutableState.value = AdbProbeScreenState(
-                        scan = AdbProbeScanState.Error(error.message ?: "Falha ao procurar interfaces ADB USB."),
-                    )
-                }
+                publishScanIfCurrent(
+                    generation = generation,
+                    scan = AdbProbeScanState.Error(
+                        error.message ?: "Falha ao procurar interfaces ADB USB.",
+                    ),
+                )
             }
         }
     }
 
     fun probe(candidate: AdbProbeCandidate) {
-        val generation = operationGeneration.incrementAndGet()
-        diagnosticsGeneration.incrementAndGet()
+        val transportId = requireNotNull(candidate.descriptor.transportId)
+        val generation = synchronized(connectionLock) {
+            val nextGeneration = operationGeneration.incrementAndGet()
+            diagnosticsGeneration.incrementAndGet()
+            mutableState.value = mutableState.value.copy(
+                operation = AdbProbeOperationState.Running(
+                    transportId = transportId,
+                    stage = "Solicitando permissao USB e revalidando o alvo...",
+                ),
+                diagnostics = AdbProbeDiagnosticsState.Idle,
+            )
+            nextGeneration
+        }
         probeJob?.cancel()
         diagnosticsJob?.cancel()
-        val transportId = requireNotNull(candidate.descriptor.transportId)
-        mutableState.value = mutableState.value.copy(
-            operation = AdbProbeOperationState.Running(
-                transportId = transportId,
-                stage = "Solicitando permissao USB e revalidando o alvo...",
-            ),
-            diagnostics = AdbProbeDiagnosticsState.Idle,
-        )
 
         probeJob = viewModelScope.launch(Dispatchers.IO) {
             closeActiveConnection()
@@ -238,7 +249,7 @@ internal class AdbProbeViewModel(
                                 }
                                 ownedTransport = null
 
-                                if (operationGeneration.get() == generation) {
+                                if (isCurrentConnectedSession(generation, session)) {
                                     diagnosticsRecorder.record(
                                         severity = DiagnosticSeverity.INFO,
                                         component = "adb",
@@ -311,28 +322,42 @@ internal class AdbProbeViewModel(
 
     /** Opens the allowlisted read-only services only after an explicit user action. */
     fun collectDiagnostics() {
-        val generation = operationGeneration.get()
-        val collectionGeneration = diagnosticsGeneration.incrementAndGet()
+        val request = synchronized(connectionLock) {
+            val collectionGeneration = diagnosticsGeneration.incrementAndGet()
+            val session = activeSession
+            if (session == null || mutableState.value.operation !is AdbProbeOperationState.Connected) {
+                mutableState.value = mutableState.value.copy(
+                    diagnostics = AdbProbeDiagnosticsState.Error(
+                        "Nao existe uma sessao ADB autenticada ativa para coletar diagnosticos.",
+                    ),
+                )
+                null
+            } else {
+                mutableState.value = mutableState.value.copy(
+                    diagnostics = AdbProbeDiagnosticsState.Running,
+                )
+                AdbDiagnosticsRequest(
+                    operationGeneration = operationGeneration.get(),
+                    collectionGeneration = collectionGeneration,
+                    session = session,
+                )
+            }
+        }
         diagnosticsJob?.cancel()
-        val session = synchronized(connectionLock) { activeSession }
-        if (session == null || mutableState.value.operation !is AdbProbeOperationState.Connected) {
-            mutableState.value = mutableState.value.copy(
-                diagnostics = AdbProbeDiagnosticsState.Error(
-                    "Nao existe uma sessao ADB autenticada ativa para coletar diagnosticos.",
-                ),
-            )
+        if (request == null) {
+            diagnosticsJob = null
             return
         }
 
-        mutableState.value = mutableState.value.copy(diagnostics = AdbProbeDiagnosticsState.Running)
         diagnosticsJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                val snapshot = AdbReadonlyDiagnosticRunner(session).collect()
-                if (!isCurrentDiagnostics(generation, collectionGeneration, session)) return@launch
-
-                mutableState.value = mutableState.value.copy(
+                val snapshot = AdbReadonlyDiagnosticRunner(request.session).collect()
+                val published = publishDiagnosticsIfCurrent(
+                    request = request,
                     diagnostics = AdbProbeDiagnosticsState.Ready(snapshot),
                 )
+                if (!published) return@launch
+
                 diagnosticsRecorder.record(
                     severity = DiagnosticSeverity.INFO,
                     component = "adb",
@@ -347,12 +372,14 @@ internal class AdbProbeViewModel(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                if (!isCurrentDiagnostics(generation, collectionGeneration, session)) return@launch
-                mutableState.value = mutableState.value.copy(
+                val published = publishDiagnosticsIfCurrent(
+                    request = request,
                     diagnostics = AdbProbeDiagnosticsState.Error(
                         error.message ?: "Falha inesperada na coleta ADB: ${error.javaClass.simpleName}.",
                     ),
                 )
+                if (!published) return@launch
+
                 diagnosticsRecorder.record(
                     severity = DiagnosticSeverity.ERROR,
                     component = "adb",
@@ -365,25 +392,46 @@ internal class AdbProbeViewModel(
     }
 
     fun cancelDiagnostics() {
-        diagnosticsGeneration.incrementAndGet()
+        synchronized(connectionLock) {
+            diagnosticsGeneration.incrementAndGet()
+            if (mutableState.value.operation is AdbProbeOperationState.Connected) {
+                mutableState.value = mutableState.value.copy(
+                    diagnostics = AdbProbeDiagnosticsState.Idle,
+                )
+            }
+        }
         diagnosticsJob?.cancel()
         diagnosticsJob = null
-        if (mutableState.value.operation is AdbProbeOperationState.Connected) {
-            mutableState.value = mutableState.value.copy(diagnostics = AdbProbeDiagnosticsState.Idle)
-        }
     }
 
     fun cancelActiveOperation() {
-        operationGeneration.incrementAndGet()
-        diagnosticsGeneration.incrementAndGet()
+        synchronized(connectionLock) {
+            operationGeneration.incrementAndGet()
+            diagnosticsGeneration.incrementAndGet()
+            mutableState.value = mutableState.value.copy(
+                operation = AdbProbeOperationState.Idle,
+                diagnostics = AdbProbeDiagnosticsState.Idle,
+            )
+        }
         probeJob?.cancel()
         diagnosticsJob?.cancel()
         scanJob?.cancel()
-        mutableState.value = mutableState.value.copy(
-            operation = AdbProbeOperationState.Idle,
-            diagnostics = AdbProbeDiagnosticsState.Idle,
-        )
         scheduleActiveConnectionClose()
+    }
+
+    private fun publishScanIfCurrent(
+        generation: Long,
+        scan: AdbProbeScanState,
+    ): Boolean = synchronized(connectionLock) {
+        if (operationGeneration.get() != generation) {
+            false
+        } else {
+            mutableState.value = AdbProbeScreenState(
+                scan = scan,
+                operation = AdbProbeOperationState.Idle,
+            )
+            true
+        }
     }
 
     private fun publishRunning(
@@ -391,16 +439,20 @@ internal class AdbProbeViewModel(
         transportId: String,
         stage: String,
         awaitingAuthorization: Boolean = false,
-    ) {
-        if (operationGeneration.get() != generation) return
-        mutableState.value = mutableState.value.copy(
-            operation = AdbProbeOperationState.Running(
-                transportId = transportId,
-                stage = stage,
-                awaitingDeviceAuthorization = awaitingAuthorization,
-            ),
-            diagnostics = AdbProbeDiagnosticsState.Idle,
-        )
+    ): Boolean = synchronized(connectionLock) {
+        if (operationGeneration.get() != generation) {
+            false
+        } else {
+            mutableState.value = mutableState.value.copy(
+                operation = AdbProbeOperationState.Running(
+                    transportId = transportId,
+                    stage = stage,
+                    awaitingDeviceAuthorization = awaitingAuthorization,
+                ),
+                diagnostics = AdbProbeDiagnosticsState.Idle,
+            )
+            true
+        }
     }
 
     private fun publishFailure(
@@ -408,11 +460,19 @@ internal class AdbProbeViewModel(
         message: String,
         authorizationMayBePending: Boolean = false,
     ) {
-        if (operationGeneration.get() != generation) return
-        mutableState.value = mutableState.value.copy(
-            operation = AdbProbeOperationState.Error(message, authorizationMayBePending),
-            diagnostics = AdbProbeDiagnosticsState.Idle,
-        )
+        val published = synchronized(connectionLock) {
+            if (operationGeneration.get() != generation) {
+                false
+            } else {
+                mutableState.value = mutableState.value.copy(
+                    operation = AdbProbeOperationState.Error(message, authorizationMayBePending),
+                    diagnostics = AdbProbeDiagnosticsState.Idle,
+                )
+                true
+            }
+        }
+        if (!published) return
+
         diagnosticsRecorder.record(
             severity = DiagnosticSeverity.ERROR,
             component = "adb",
@@ -455,13 +515,28 @@ internal class AdbProbeViewModel(
         }
     }
 
-    private fun isCurrentDiagnostics(
-        operationGeneration: Long,
-        collectionGeneration: Long,
+    private fun isCurrentConnectedSession(
+        generation: Long,
         session: AdbSessionController,
-    ): Boolean = this.operationGeneration.get() == operationGeneration &&
-        diagnosticsGeneration.get() == collectionGeneration &&
-        synchronized(connectionLock) { activeSession === session }
+    ): Boolean = synchronized(connectionLock) {
+        operationGeneration.get() == generation && activeSession === session
+    }
+
+    private fun publishDiagnosticsIfCurrent(
+        request: AdbDiagnosticsRequest,
+        diagnostics: AdbProbeDiagnosticsState,
+    ): Boolean = synchronized(connectionLock) {
+        if (
+            operationGeneration.get() != request.operationGeneration ||
+            diagnosticsGeneration.get() != request.collectionGeneration ||
+            activeSession !== request.session
+        ) {
+            false
+        } else {
+            mutableState.value = mutableState.value.copy(diagnostics = diagnostics)
+            true
+        }
+    }
 
     private suspend fun closeActiveConnection() {
         scheduleActiveConnectionClose()?.join()
@@ -528,8 +603,6 @@ internal class AdbProbeViewModel(
             withContext(NonCancellable) {
                 session.close()
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
         } catch (error: Exception) {
             diagnosticsRecorder.record(
                 severity = DiagnosticSeverity.ERROR,
@@ -552,8 +625,6 @@ internal class AdbProbeViewModel(
             withContext(NonCancellable) {
                 transport.close()
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
         } catch (error: Exception) {
             diagnosticsRecorder.record(
                 severity = DiagnosticSeverity.ERROR,
@@ -573,8 +644,6 @@ internal class AdbProbeViewModel(
             withContext(NonCancellable) {
                 usbBackend.close()
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
         } catch (error: Exception) {
             diagnosticsRecorder.record(
                 severity = DiagnosticSeverity.ERROR,
@@ -587,8 +656,10 @@ internal class AdbProbeViewModel(
     }
 
     override fun onCleared() {
-        operationGeneration.incrementAndGet()
-        diagnosticsGeneration.incrementAndGet()
+        synchronized(connectionLock) {
+            operationGeneration.incrementAndGet()
+            diagnosticsGeneration.incrementAndGet()
+        }
         scanJob?.cancel()
         probeJob?.cancel()
         diagnosticsJob?.cancel()
