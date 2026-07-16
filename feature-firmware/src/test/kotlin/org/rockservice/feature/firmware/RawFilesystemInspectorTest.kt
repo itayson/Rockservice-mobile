@@ -47,6 +47,8 @@ class RawFilesystemInspectorTest {
         buffer.putInt(1024 + 12, 3)
         buffer.putInt(1024 + 16, 12)
         buffer.putInt(1024 + 20, 9)
+        buffer.putInt(1024 + 24, 1)
+        buffer.putInt(1024 + 28, 1)
 
         val result = RawFilesystemInspector().inspect(ByteArrayInputStream(bytes))
 
@@ -63,6 +65,8 @@ class RawFilesystemInspectorTest {
         buffer.putInt(1024 + 12, 5)
         buffer.putInt(1024 + 16, 14)
         buffer.putInt(1024 + 20, 9)
+        buffer.putInt(1024 + 24, 1)
+        buffer.putInt(1024 + 28, 1)
 
         val result = RawFilesystemInspector().inspect(ByteArrayInputStream(bytes))
 
@@ -79,6 +83,25 @@ class RawFilesystemInspectorTest {
         buffer.putInt(1024 + 12, 3)
         buffer.putInt(1024 + 16, 11)
         buffer.putInt(1024 + 20, 9)
+        buffer.putInt(1024 + 24, 1)
+        buffer.putInt(1024 + 28, 1)
+
+        val result = RawFilesystemInspector().inspect(ByteArrayInputStream(bytes))
+
+        assertEquals(RawFilesystemType.UNKNOWN, result.type)
+    }
+
+    @Test
+    fun `f2fs zero section geometry remains unknown`() {
+        val bytes = ByteArray(2048)
+        val buffer = littleEndianBuffer(bytes)
+        buffer.putInt(1024, 0xF2F52010.toInt())
+        buffer.putInt(1024 + 8, 9)
+        buffer.putInt(1024 + 12, 3)
+        buffer.putInt(1024 + 16, 12)
+        buffer.putInt(1024 + 20, 9)
+        buffer.putInt(1024 + 24, 0)
+        buffer.putInt(1024 + 28, 1)
 
         val result = RawFilesystemInspector().inspect(ByteArrayInputStream(bytes))
 
@@ -174,6 +197,17 @@ class RawFilesystemInspectorTest {
         val bytes = ByteArray(2048)
         littleEndianBuffer(bytes).putInt(1024, 0xE0F5E1E2.toInt())
         bytes[1024 + 12] = 2
+
+        expectIllegalArgument {
+            RawFilesystemInspector().inspect(ByteArrayInputStream(bytes))
+        }
+    }
+
+    @Test
+    fun `erofs block size above conservative linux page ceiling fails closed`() {
+        val bytes = ByteArray(2048)
+        littleEndianBuffer(bytes).putInt(1024, 0xE0F5E1E2.toInt())
+        bytes[1024 + 12] = 17
 
         expectIllegalArgument {
             RawFilesystemInspector().inspect(ByteArrayInputStream(bytes))
