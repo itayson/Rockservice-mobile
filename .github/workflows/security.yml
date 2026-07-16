@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Scan repository with Gitleaks
@@ -40,17 +40,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Detect dependency manifest changes
         id: dependencies
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          changed_files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+          changed_files="$(gh api --paginate \
+            --jq '.[].filename' \
+            "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files")"
           dependency_files="$(printf '%s\n' "$changed_files" | grep -E '(^|/)(build\.gradle(\.kts)?|settings\.gradle(\.kts)?|gradle/libs\.versions\.toml|gradle-wrapper\.properties|gradle\.lockfile)$' || true)"
           if [ -n "$dependency_files" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
