@@ -13,7 +13,6 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.rockservice.core.common.diagnostics.DiagnosticEventRecorder
 import org.rockservice.core.common.diagnostics.DiagnosticSeverity
@@ -34,14 +33,8 @@ internal data class AdbProbeCandidate(
 
 internal sealed interface AdbProbeScanState {
     data object Loading : AdbProbeScanState
-
-    data class Ready(
-        val candidates: List<AdbProbeCandidate>,
-    ) : AdbProbeScanState
-
-    data class Error(
-        val message: String,
-    ) : AdbProbeScanState
+    data class Ready(val candidates: List<AdbProbeCandidate>) : AdbProbeScanState
+    data class Error(val message: String) : AdbProbeScanState
 }
 
 internal sealed interface AdbProbeOperationState {
@@ -81,13 +74,15 @@ internal class AdbProbeViewModel(
     private val identityStore = AdbAppIdentityStore(appContext)
     private val mutableState = MutableStateFlow(AdbProbeScreenState())
     private val operationGeneration = AtomicLong(0L)
+    private val transportLock = Any()
     private var scanJob: Job? = null
     private var probeJob: Job? = null
+
+    @Volatile
     private var activeTransport: AdbMessageTransport? = null
 
     val state = mutableState.asStateFlow()
 
-    /** Re-enumerates USB and keeps only targets with one unambiguous canonical ADB interface. */
     fun refresh() {
         val generation = operationGeneration.incrementAndGet()
         probeJob?.cancel()
@@ -121,16 +116,13 @@ internal class AdbProbeViewModel(
             } catch (error: Exception) {
                 if (operationGeneration.get() == generation) {
                     mutableState.value = AdbProbeScreenState(
-                        scan = AdbProbeScanState.Error(
-                            error.message ?: "Falha ao procurar interfaces ADB USB.",
-                        ),
+                        scan = AdbProbeScanState.Error(error.message ?: "Falha ao procurar interfaces ADB USB."),
                     )
                 }
             }
         }
     }
 
-    /** Requests permission, revalidates the target and performs only the bounded ADB handshake. */
     fun probe(candidate: AdbProbeCandidate) {
         val generation = operationGeneration.incrementAndGet()
         probeJob?.cancel()
@@ -145,6 +137,7 @@ internal class AdbProbeViewModel(
         probeJob = viewModelScope.launch(Dispatchers.IO) {
             closeActiveTransport()
             var authorizationMayBePending = false
+            var ownedTransport: AdbMessageTransport? = null
             try {
                 val permitted = usbBackend.requestPermission(candidate.descriptor, USB_PERMISSION_TIMEOUT_MILLIS)
                 val topology = usbBackend.inspectTopology(permitted)
@@ -156,7 +149,8 @@ internal class AdbProbeViewModel(
                 val identity = identityStore.loadOrCreate()
                 val machine = AdbHandshakeStateMachine(identity)
                 val transport = transportFactory.open(permitted)
-                activeTransport = transport
+                ownedTransport = transport
+                registerActiveTransport(transport)
 
                 withTimeout(HANDSHAKE_TOTAL_TIMEOUT_MILLIS) {
                     val start = machine.start()
@@ -166,7 +160,6 @@ internal class AdbProbeViewModel(
                     repeat(MAXIMUM_HANDSHAKE_MESSAGES) {
                         val incoming = transport.receive(
                             timeoutMillis = MESSAGE_TIMEOUT_MILLIS,
-                            // Modern ADB peers may omit the legacy additive checksum during handshake.
                             requireChecksum = false,
                         )
                         val transition = machine.receive(incoming)
@@ -223,18 +216,18 @@ internal class AdbProbeViewModel(
                         "O handshake ADB excedeu o numero maximo de mensagens permitido sem concluir.",
                     )
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
             } catch (timeout: TimeoutCancellationException) {
                 publishFailure(
                     generation = generation,
                     message = if (authorizationMayBePending) {
-                        "O dispositivo nao concluiu a autorizacao ADB. Confirme o dialogo RSA no dispositivo e execute o probe novamente."
+                        "O dispositivo nao concluiu a autorizacao ADB. Confirme o dialogo RSA no dispositivo e execute a validacao novamente."
                     } else {
                         "O dispositivo ADB nao concluiu o handshake dentro do prazo configurado."
                     },
                     authorizationMayBePending = authorizationMayBePending,
                 )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: SecurityException) {
                 publishFailure(generation, "O Android negou acesso ao dispositivo USB selecionado.")
             } catch (error: IOException) {
@@ -242,11 +235,11 @@ internal class AdbProbeViewModel(
             } catch (error: Exception) {
                 publishFailure(
                     generation,
-                    error.message ?: "Falha inesperada durante o probe ADB: ${error.javaClass.simpleName}.",
+                    error.message ?: "Falha inesperada durante a validacao ADB: ${error.javaClass.simpleName}.",
                     authorizationMayBePending,
                 )
             } finally {
-                closeActiveTransport()
+                ownedTransport?.let { transport -> closeOwnedTransport(transport) }
             }
         }
     }
@@ -288,15 +281,29 @@ internal class AdbProbeViewModel(
             severity = DiagnosticSeverity.ERROR,
             component = "adb",
             action = "handshake.failed",
-            message = "Probe de conexao/autorizacao ADB falhou.",
+            message = "Validacao de conexao/autorizacao ADB falhou.",
             metadata = mapOf("authorizationMayBePending" to authorizationMayBePending.toString()),
         )
     }
 
+    private fun registerActiveTransport(transport: AdbMessageTransport) {
+        synchronized(transportLock) {
+            activeTransport = transport
+        }
+    }
+
     private suspend fun closeActiveTransport() {
-        val transport = activeTransport
-        activeTransport = null
+        val transport = synchronized(transportLock) {
+            activeTransport.also { activeTransport = null }
+        }
         runCatching { transport?.close() }
+    }
+
+    private suspend fun closeOwnedTransport(transport: AdbMessageTransport) {
+        synchronized(transportLock) {
+            if (activeTransport === transport) activeTransport = null
+        }
+        runCatching { transport.close() }
     }
 
     override fun onCleared() {
