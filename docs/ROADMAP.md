@@ -26,13 +26,15 @@ Entregue:
 - lifecycle USB e attach/detach;
 - ViewModel e coordenador testável para remover o estado operacional USB da `Activity`;
 - relatório sanitizado de validação de hardware com exportação controlada;
-- invalidação de jobs e resultados obsoletos ao trocar o alvo.
+- invalidação de jobs e resultados obsoletos ao trocar o alvo;
+- log técnico estruturado, sanitizado e limitado em memória;
+- tela de consulta, limpeza e exportação manual em JSONL sem permissão ampla de armazenamento.
 
 Pendente:
 
-- logs estruturados;
+- integração do log estruturado com fluxos adicionais de firmware, ADB e operações críticas;
 - casos de uso adicionais para futuros fluxos críticos;
-- banco local quando existir requisito de persistência.
+- banco local somente quando existir requisito explícito de persistência.
 
 ## Fase 2 — Laboratório de firmware
 
