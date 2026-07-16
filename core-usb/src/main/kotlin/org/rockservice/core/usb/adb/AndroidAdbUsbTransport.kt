@@ -104,12 +104,12 @@ internal interface AdbUsbIo : Closeable {
 }
 
 /** Opens only an explicitly selected USB target exposing exactly one canonical ADB interface. */
-internal class AndroidAdbUsbTransportFactory(
+class AndroidAdbUsbTransportFactory(
     context: Context,
     private val usbManager: UsbManager = context.applicationContext
         .getSystemService(Context.USB_SERVICE) as UsbManager,
 ) {
-    fun open(expected: UsbDeviceDescriptor): AndroidAdbUsbTransport {
+    fun open(expected: UsbDeviceDescriptor): AdbMessageTransport {
         val transportId = requireNotNull(expected.transportId) {
             "ADB transport requires an explicitly selected target."
         }
