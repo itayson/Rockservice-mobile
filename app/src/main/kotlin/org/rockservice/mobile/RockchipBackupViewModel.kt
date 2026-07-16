@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.BufferedOutputStream
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,8 +15,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.rockservice.core.usb.UsbDeviceDescriptor
 import org.rockservice.core.usb.rockchip.AndroidRockchipReadOnlyBackupClient
+import org.rockservice.core.usb.rockchip.RockchipBackupManifestCodec
 import org.rockservice.core.usb.rockchip.RockchipBoundedBackupProgress
 import org.rockservice.core.usb.rockchip.RockchipBoundedBackupResult
+import org.rockservice.core.usb.rockchip.toBackupManifest
 
 internal sealed interface RockchipBackupState {
     data object Idle : RockchipBackupState
@@ -23,7 +26,11 @@ internal sealed interface RockchipBackupState {
         val progress: RockchipBoundedBackupProgress?,
         val destinationMayContainPartialData: Boolean,
     ) : RockchipBackupState
-    data class Completed(val result: RockchipBoundedBackupResult) : RockchipBackupState
+    data class Completed(
+        val result: RockchipBoundedBackupResult,
+        val manifestExportRunning: Boolean = false,
+        val manifestExportMessage: String? = null,
+    ) : RockchipBackupState
     data class Failed(
         val message: String,
         val destinationMayContainPartialData: Boolean,
@@ -35,6 +42,7 @@ internal class RockchipBackupViewModel : ViewModel() {
     private val mutableState = MutableStateFlow<RockchipBackupState>(RockchipBackupState.Idle)
     private val stateLock = Any()
     private var job: Job? = null
+    private var manifestExportJob: Job? = null
     private var generation = 0L
 
     val state = mutableState.asStateFlow()
@@ -109,9 +117,54 @@ internal class RockchipBackupViewModel : ViewModel() {
         }
     }
 
+    fun exportManifest(contentResolver: ContentResolver, destination: Uri) {
+        val export = synchronized(stateLock) {
+            val completed = mutableState.value as? RockchipBackupState.Completed ?: return
+            if (completed.manifestExportRunning) return
+            val text = RockchipBackupManifestCodec.encode(completed.result.toBackupManifest())
+            mutableState.value = completed.copy(
+                manifestExportRunning = true,
+                manifestExportMessage = null,
+            )
+            generation to text
+        }
+
+        manifestExportJob?.cancel()
+        manifestExportJob = viewModelScope.launch(Dispatchers.IO) {
+            val message = try {
+                val rawOutput = contentResolver.openOutputStream(destination, "w")
+                    ?: throw IOException("O destino do manifesto não pode ser aberto para escrita.")
+                rawOutput.bufferedWriter(StandardCharsets.UTF_8).use { writer ->
+                    writer.write(export.second)
+                    writer.flush()
+                }
+                "Manifesto local exportado com sucesso."
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: SecurityException) {
+                error.message?.take(MAXIMUM_ERROR_LENGTH)?.ifBlank { null }
+                    ?: "O Android negou acesso ao destino do manifesto."
+            } catch (error: IOException) {
+                error.message?.take(MAXIMUM_ERROR_LENGTH)?.ifBlank { null }
+                    ?: "Falha de entrada/saída ao exportar o manifesto."
+            }
+
+            synchronized(stateLock) {
+                if (export.first != generation) return@synchronized
+                val completed = mutableState.value as? RockchipBackupState.Completed ?: return@synchronized
+                mutableState.value = completed.copy(
+                    manifestExportRunning = false,
+                    manifestExportMessage = message,
+                )
+            }
+        }
+    }
+
     fun cancel() {
         job?.cancel()
         job = null
+        manifestExportJob?.cancel()
+        manifestExportJob = null
         synchronized(stateLock) {
             generation += 1L
             mutableState.value = RockchipBackupState.Idle
@@ -124,6 +177,7 @@ internal class RockchipBackupViewModel : ViewModel() {
 
     override fun onCleared() {
         job?.cancel()
+        manifestExportJob?.cancel()
         synchronized(stateLock) { generation += 1L }
         super.onCleared()
     }
