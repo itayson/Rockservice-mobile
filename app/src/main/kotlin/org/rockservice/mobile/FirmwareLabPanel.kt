@@ -21,6 +21,7 @@ internal fun FirmwareLabPanel(
     onSelectFile: () -> Unit,
     onExportReport: (String) -> Unit,
     onExpandSparse: (String) -> Unit,
+    onOpenBootExtraction: () -> Unit,
 ) {
     val expansionRunning = state.expansion is FirmwareLabExpansionState.Expanding
     Column(
@@ -116,6 +117,27 @@ internal fun FirmwareLabPanel(
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Text("Selecionar destino e expandir para RAW")
+                            }
+                        }
+                    }
+                }
+
+                if (report.detectedFormat == FirmwareFormat.ANDROID_BOOT_IMAGE) {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text("Payloads Android Boot Image", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Abra a tela de extracao para revalidar a imagem e exportar somente uma secao de payload por vez. O header nao e oferecido.",
+                            )
+                            Button(
+                                onClick = onOpenBootExtraction,
+                                enabled = !expansionRunning,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Abrir extracao controlada de payloads")
                             }
                         }
                     }
