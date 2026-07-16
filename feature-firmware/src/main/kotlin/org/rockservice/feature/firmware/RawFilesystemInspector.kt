@@ -82,7 +82,7 @@ class RawFilesystemInspector(
     }
 
     private fun detectF2fs(bytes: ByteArray, prefixSha256: String): RawFilesystemInspection? {
-        if (bytes.size < F2FS_SUPERBLOCK_OFFSET + F2FS_LOG_BLOCKS_PER_SEG_RELATIVE_OFFSET + 4) return null
+        if (bytes.size < F2FS_REQUIRED_PREFIX_BYTES) return null
         if (bytes.readUInt32Le(F2FS_SUPERBLOCK_OFFSET) != F2FS_SUPER_MAGIC) return null
 
         val logSectorSize = bytes.readUInt32Le(F2FS_SUPERBLOCK_OFFSET + F2FS_LOG_SECTOR_SIZE_RELATIVE_OFFSET)
@@ -93,11 +93,19 @@ class RawFilesystemInspector(
         val logBlocksPerSegment = bytes.readUInt32Le(
             F2FS_SUPERBLOCK_OFFSET + F2FS_LOG_BLOCKS_PER_SEG_RELATIVE_OFFSET,
         )
+        val segmentsPerSection = bytes.readUInt32Le(
+            F2FS_SUPERBLOCK_OFFSET + F2FS_SEGMENTS_PER_SECTION_RELATIVE_OFFSET,
+        )
+        val sectionsPerZone = bytes.readUInt32Le(
+            F2FS_SUPERBLOCK_OFFSET + F2FS_SECTIONS_PER_ZONE_RELATIVE_OFFSET,
+        )
 
         if (logBlockSize !in F2FS_MINIMUM_LOG_BLOCK_SIZE..F2FS_MAXIMUM_LOG_BLOCK_SIZE ||
             logBlocksPerSegment != F2FS_REQUIRED_LOG_BLOCKS_PER_SEGMENT ||
             logSectorSize !in F2FS_MINIMUM_LOG_SECTOR_SIZE..logBlockSize ||
-            logSectorSize + logSectorsPerBlock != logBlockSize
+            logSectorSize + logSectorsPerBlock != logBlockSize ||
+            segmentsPerSection == 0L ||
+            sectionsPerZone == 0L
         ) {
             return null
         }
@@ -107,7 +115,7 @@ class RawFilesystemInspector(
             bytesInspected = bytes.size,
             blockSizeBytes = 1L shl logBlockSize.toInt(),
             prefixSha256 = prefixSha256,
-            detail = "Superblock F2FS reconhecido por magic e geometria básica coerente de bloco/segmento.",
+            detail = "Superblock F2FS reconhecido por magic e geometria coerente de bloco, segmento, seção e zona.",
         )
     }
 
@@ -224,6 +232,9 @@ class RawFilesystemInspector(
         const val F2FS_LOG_SECTORS_PER_BLOCK_RELATIVE_OFFSET = 12
         const val F2FS_LOG_BLOCK_SIZE_RELATIVE_OFFSET = 16
         const val F2FS_LOG_BLOCKS_PER_SEG_RELATIVE_OFFSET = 20
+        const val F2FS_SEGMENTS_PER_SECTION_RELATIVE_OFFSET = 24
+        const val F2FS_SECTIONS_PER_ZONE_RELATIVE_OFFSET = 28
+        const val F2FS_REQUIRED_PREFIX_BYTES = F2FS_SUPERBLOCK_OFFSET + F2FS_SECTIONS_PER_ZONE_RELATIVE_OFFSET + 4
         const val F2FS_SUPER_MAGIC = 0xF2F52010L
         const val F2FS_MINIMUM_LOG_SECTOR_SIZE = 9L
         const val F2FS_MINIMUM_LOG_BLOCK_SIZE = 12L
@@ -240,9 +251,9 @@ class RawFilesystemInspector(
         const val MAXIMUM_SQUASHFS_BLOCK_SIZE = 1024L * 1024
 
         const val MINIMUM_BLOCK_SIZE_BITS = 9
-        const val MAXIMUM_BLOCK_SIZE_BITS = 20
+        const val MAXIMUM_BLOCK_SIZE_BITS = 16
         const val MINIMUM_GENERIC_BLOCK_SIZE = 512L
-        const val MAXIMUM_GENERIC_BLOCK_SIZE = 1024L * 1024
+        const val MAXIMUM_GENERIC_BLOCK_SIZE = 64L * 1024
     }
 }
 
