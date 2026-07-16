@@ -23,30 +23,24 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.launch
 import org.rockservice.core.usb.AndroidUsbAttachmentMonitor
-import org.rockservice.core.usb.AndroidUsbHostBackend
 
 class AdbProbeActivity : ComponentActivity() {
-    private lateinit var usbBackend: AndroidUsbHostBackend
     private lateinit var usbAttachmentMonitor: AndroidUsbAttachmentMonitor
     private lateinit var probeViewModel: AdbProbeViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        usbBackend = AndroidUsbHostBackend(applicationContext)
         probeViewModel = ViewModelProvider(
             this,
-            AdbProbeViewModelFactory(applicationContext, usbBackend),
+            AdbProbeViewModelFactory(applicationContext),
         )[AdbProbeViewModel::class.java]
         usbAttachmentMonitor = AndroidUsbAttachmentMonitor(applicationContext) {
             probeViewModel.cancelActiveOperation()
             probeViewModel.refresh()
         }
         usbAttachmentMonitor.start()
-        probeViewModel.refresh()
+        probeViewModel.start()
 
         setContent {
             MaterialTheme {
@@ -180,11 +174,7 @@ class AdbProbeActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        if (::probeViewModel.isInitialized) probeViewModel.cancelActiveOperation()
         if (::usbAttachmentMonitor.isInitialized) usbAttachmentMonitor.close()
-        if (::usbBackend.isInitialized) {
-            lifecycleScope.launch(start = CoroutineStart.UNDISPATCHED) { usbBackend.close() }
-        }
         super.onDestroy()
     }
 }
