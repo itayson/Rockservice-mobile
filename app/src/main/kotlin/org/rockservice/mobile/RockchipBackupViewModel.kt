@@ -210,23 +210,27 @@ internal class RockchipBackupViewModel : ViewModel() {
                 result = result,
                 message = "O arquivo persistido diverge do backup lido. " +
                     "Tamanho: ${if (verification.sizeMatches) "OK" else "DIVERGENTE"}; " +
-                    "SHA-256: ${if (verification.sha256Matches) "OK" else "DIVERGENTE"}.",
+                    "SHA-256: ${if (verification.sha256Matches) "OK" else "DIVERGENTE"}. " +
+                    "Não exporte um manifesto para este arquivo; execute um novo backup em um destino confiável.",
             )
         }
     } catch (_: SecurityException) {
         RockchipBackupState.StoredFileVerificationFailed(
             result = result,
-            message = "O backup foi salvo, mas o Android negou a releitura necessária para validar o arquivo persistido.",
+            message = "O backup foi salvo, mas o destino não concede leitura ao aplicativo. " +
+                "Escolha um destino SAF que permita releitura e execute um novo backup.",
         )
     } catch (_: IOException) {
         RockchipBackupState.StoredFileVerificationFailed(
             result = result,
-            message = "O backup foi salvo, mas não foi possível reler o arquivo para confirmar tamanho e SHA-256.",
+            message = "O backup foi salvo, mas não pôde ser relido. " +
+                "Verifique se o armazenamento continua disponível e execute um novo backup.",
         )
     } catch (_: IllegalArgumentException) {
         RockchipBackupState.StoredFileVerificationFailed(
             result = result,
-            message = "O backup foi salvo, mas seus metadados de integridade não puderam ser validados.",
+            message = "O backup foi salvo, mas os metadados de integridade são inválidos. " +
+                "Execute um novo backup; se o problema persistir, registre o erro para diagnóstico.",
         )
     }
 
