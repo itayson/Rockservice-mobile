@@ -7,9 +7,6 @@
         android:theme="@style/Theme.RockService"
         android:usesCleartextTraffic="false">
         <activity
-            android:name=".AdbProbeActivity"
-            android:exported="false" />
-        <activity
             android:name=".SuperImageExtractionActivity"
             android:exported="false" />
         <activity
