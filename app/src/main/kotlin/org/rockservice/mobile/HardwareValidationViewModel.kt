@@ -241,7 +241,8 @@ internal class HardwareValidationViewModel : ViewModel() {
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: SecurityException) {
-                "O Android negou acesso ao destino do relatorio."
+                error.message?.ifBlank { null }
+                    ?: "O Android negou acesso ao destino do relatorio."
             } catch (error: IOException) {
                 error.message ?: "Falha ao exportar o relatorio."
             }
