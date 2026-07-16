@@ -79,6 +79,7 @@ class HardwareValidationActivity : ComponentActivity() {
                 val validationState by validationViewModel.state.collectAsState()
                 val lbaScope = rememberCoroutineScope()
                 var lbaJob by remember { mutableStateOf<Job?>(null) }
+                var lbaGeneration by remember { mutableStateOf(0L) }
                 var lbaRunning by remember { mutableStateOf(false) }
                 var lbaReport by remember { mutableStateOf<RockchipBoundedLbaProbeReport?>(null) }
                 var lbaError by remember { mutableStateOf<String?>(null) }
@@ -99,6 +100,7 @@ class HardwareValidationActivity : ComponentActivity() {
                 }
 
                 fun clearBoundedReadState() {
+                    lbaGeneration += 1L
                     lbaJob?.cancel()
                     lbaJob = null
                     lbaRunning = false
@@ -341,30 +343,44 @@ class HardwareValidationActivity : ComponentActivity() {
                                             Button(
                                                 onClick = {
                                                     lbaJob?.cancel()
+                                                    val generation = ++lbaGeneration
                                                     lbaReport = null
                                                     lbaError = null
                                                     lbaRunning = true
                                                     val snapshot = selectedSnapshot
                                                     lbaJob = lbaScope.launch {
                                                         try {
-                                                            lbaReport = withContext(Dispatchers.IO) {
+                                                            val report = withContext(Dispatchers.IO) {
                                                                 metadataClient.readFirstSector(snapshot.descriptor)
+                                                            }
+                                                            if (generation == lbaGeneration) {
+                                                                lbaReport = report
                                                             }
                                                         } catch (cancelled: CancellationException) {
                                                             throw cancelled
                                                         } catch (error: SecurityException) {
-                                                            lbaError = "O Android negou acesso USB: ${error.message ?: "sem detalhe"}."
+                                                            if (generation == lbaGeneration) {
+                                                                lbaError = "O Android negou acesso USB: ${error.message ?: "sem detalhe"}. Reconecte o dispositivo e tente novamente."
+                                                            }
                                                         } catch (error: IllegalArgumentException) {
-                                                            lbaError = error.message ?: "O alvo USB mudou ou deixou de estar conectado."
+                                                            if (generation == lbaGeneration) {
+                                                                lbaError = error.message
+                                                                    ?: "O alvo USB mudou ou deixou de estar conectado. Reconecte o dispositivo e tente novamente."
+                                                            }
                                                         } catch (error: IllegalStateException) {
-                                                            lbaError = error.message
-                                                                ?: "A permissao USB foi negada ou a conexao nao pode ser aberta."
+                                                            if (generation == lbaGeneration) {
+                                                                lbaError = error.message
+                                                                    ?: "A permissao USB foi negada ou a conexao nao pode ser aberta. Reconecte o dispositivo e tente novamente."
+                                                            }
                                                         } catch (error: IOException) {
-                                                            lbaError = error.message ?: "Falha de entrada/saida durante a leitura limitada."
-                                                        } catch (error: RuntimeException) {
-                                                            lbaError = "Falha inesperada ${error.javaClass.simpleName} na leitura limitada."
+                                                            if (generation == lbaGeneration) {
+                                                                lbaError = error.message
+                                                                    ?: "Falha de entrada/saida durante a leitura limitada. Reconecte o dispositivo e tente novamente."
+                                                            }
                                                         } finally {
-                                                            lbaRunning = false
+                                                            if (generation == lbaGeneration) {
+                                                                lbaRunning = false
+                                                            }
                                                         }
                                                     }
                                                 },
