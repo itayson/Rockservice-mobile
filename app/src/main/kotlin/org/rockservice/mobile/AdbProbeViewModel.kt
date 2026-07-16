@@ -8,14 +8,16 @@ import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -81,6 +83,14 @@ internal data class AdbProbeScreenState(
     val diagnostics: AdbProbeDiagnosticsState = AdbProbeDiagnosticsState.Idle,
 )
 
+private data class AdbConnectionResources(
+    val session: AdbSessionController?,
+    val transport: AdbMessageTransport?,
+) {
+    val isEmpty: Boolean
+        get() = session == null && transport == null
+}
+
 /**
  * Enumerates canonical ADB USB targets, performs CNXN/AUTH, and retains an authenticated session
  * only after explicit user initiation. Diagnostic services are opened only by [collectDiagnostics].
@@ -101,6 +111,7 @@ internal class AdbProbeViewModel(
     private var scanJob: Job? = null
     private var probeJob: Job? = null
     private var diagnosticsJob: Job? = null
+    private var pendingConnectionClose: Job? = null
 
     @Volatile
     private var activeTransport: AdbMessageTransport? = null
@@ -371,7 +382,7 @@ internal class AdbProbeViewModel(
             operation = AdbProbeOperationState.Idle,
             diagnostics = AdbProbeDiagnosticsState.Idle,
         )
-        viewModelScope.launch(Dispatchers.IO) { closeActiveConnection() }
+        scheduleActiveConnectionClose()
     }
 
     private fun publishRunning(
@@ -442,16 +453,48 @@ internal class AdbProbeViewModel(
         synchronized(connectionLock) { activeSession === session }
 
     private suspend fun closeActiveConnection() {
-        connectionLifecycleMutex.withLock {
-            val resources = synchronized(connectionLock) {
-                val session = activeSession
-                val transport = activeTransport
-                activeSession = null
-                activeTransport = null
-                session to transport
+        scheduleActiveConnectionClose()?.join()
+    }
+
+    private fun scheduleActiveConnectionClose(): Job? {
+        var newlyScheduled: Job? = null
+        val jobToAwait = synchronized(connectionLock) {
+            val resources = AdbConnectionResources(
+                session = activeSession,
+                transport = activeTransport,
+            )
+            activeSession = null
+            activeTransport = null
+
+            val previousClose = pendingConnectionClose
+            if (resources.isEmpty) {
+                previousClose
+            } else {
+                RESOURCE_CLEANUP_SCOPE.launch(start = CoroutineStart.LAZY) {
+                    previousClose?.join()
+                    closeCapturedConnection(resources)
+                }.also { job ->
+                    pendingConnectionClose = job
+                    newlyScheduled = job
+                }
             }
-            resources.first?.let { session -> closeSessionSafely(session, "active") }
-            resources.second?.let { transport -> closeTransportSafely(transport, "fallback") }
+        }
+
+        newlyScheduled?.let { job ->
+            job.invokeOnCompletion {
+                synchronized(connectionLock) {
+                    if (pendingConnectionClose === job) pendingConnectionClose = null
+                }
+            }
+            job.start()
+        }
+        return jobToAwait
+    }
+
+    private suspend fun closeCapturedConnection(resources: AdbConnectionResources) {
+        connectionLifecycleMutex.withLock {
+            resources.session?.let { session -> closeSessionSafely(session, "active") }
+            resources.transport?.let { transport -> closeTransportSafely(transport, "fallback") }
         }
     }
 
@@ -459,7 +502,9 @@ internal class AdbProbeViewModel(
         synchronized(connectionLock) {
             if (activeTransport === transport && activeSession == null) activeTransport = null
         }
-        closeTransportSafely(transport, "owned")
+        connectionLifecycleMutex.withLock {
+            closeTransportSafely(transport, "owned")
+        }
     }
 
     private suspend fun closeSessionSafely(
@@ -534,11 +579,10 @@ internal class AdbProbeViewModel(
         scanJob?.cancel()
         probeJob?.cancel()
         diagnosticsJob?.cancel()
-        runBlocking {
-            withContext(NonCancellable + Dispatchers.IO) {
-                closeActiveConnection()
-                closeBackendSafely()
-            }
+        val closeJob = scheduleActiveConnectionClose()
+        RESOURCE_CLEANUP_SCOPE.launch {
+            closeJob?.join()
+            closeBackendSafely()
         }
         super.onCleared()
     }
@@ -563,6 +607,7 @@ internal class AdbProbeViewModel(
     }
 
     private companion object {
+        val RESOURCE_CLEANUP_SCOPE = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         const val USB_PERMISSION_TIMEOUT_MILLIS = 30_000L
         const val HANDSHAKE_TOTAL_TIMEOUT_MILLIS = 45_000L
         const val MESSAGE_TIMEOUT_MILLIS = 10_000L
