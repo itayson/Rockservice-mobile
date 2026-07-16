@@ -1,6 +1,7 @@
 package org.rockservice.core.usb.rockchip
 
 import android.content.Context
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
@@ -36,6 +37,18 @@ data class RockchipMetadataProbeReport(
     val hasAnySuccess: Boolean
         get() = entries.any(RockchipMetadataProbeEntry::succeeded)
 }
+
+data class RockchipBoundedLbaProbeReport(
+    val transportMethod: String,
+    val succeeded: Boolean,
+    val startSector: Long,
+    val sectorCount: Int,
+    val bytesRead: Int,
+    val sha256: String?,
+    val previewHex: String?,
+    val detail: String,
+    val requiresReconnect: Boolean = false,
+)
 
 /** Metadata-only facade for the physically validated Android Rockchip USB transport. */
 class AndroidRockchipReadOnlyMetadataClient internal constructor(
@@ -95,6 +108,70 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
             entries = entries,
             requiresReconnect = requiresReconnect,
         )
+    }
+
+    /** Runs exactly one read-only 512-byte READ_LBA transaction at sector zero. */
+    suspend fun readFirstSector(device: UsbDeviceDescriptor): RockchipBoundedLbaProbeReport {
+        if (!PROBE_SLOT_RESERVED.compareAndSet(false, true)) {
+            return lbaFailureReport(
+                detail = "Não executado porque uma sessão USB anterior ainda está sendo encerrada.",
+                requiresReconnect = true,
+            )
+        }
+
+        var transportOpened = false
+        val transport = try {
+            opener.open(device).also { transportOpened = true }
+        } catch (error: SecurityException) {
+            return lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalArgumentException) {
+            return lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalStateException) {
+            return lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+        } finally {
+            if (!transportOpened) PROBE_SLOT_RESERVED.set(false)
+        }
+
+        val session = RockchipReadOnlySession(transport)
+        var report: RockchipBoundedLbaProbeReport
+        var closeSucceeded = false
+        try {
+            val result = session.readLba(
+                startSector = LBA_VALIDATION_START_SECTOR,
+                sectorCount = LBA_VALIDATION_SECTOR_COUNT,
+                timeoutMillis = LBA_READ_TIMEOUT_MILLIS,
+            )
+            report = RockchipBoundedLbaProbeReport(
+                transportMethod = transportMethod.displayName,
+                succeeded = true,
+                startSector = result.startSector,
+                sectorCount = result.sectorCount,
+                bytesRead = result.data.size,
+                sha256 = result.data.sha256(),
+                previewHex = result.data.take(LBA_PREVIEW_BYTES)
+                    .joinToString("") { byte -> "%02X".format(byte) },
+                detail = "Leitura limitada de um único setor concluída.",
+                requiresReconnect = false,
+            )
+        } catch (timeout: TimeoutCancellationException) {
+            LOGGER.log(Level.WARNING, "Bounded Rockchip READ_LBA timed out.", timeout)
+            report = lbaFailureReport(
+                detail = "${transportMethod.displayName}/TIMEOUT: READ_LBA excedeu $LBA_READ_TIMEOUT_MILLIS ms.",
+                requiresReconnect = true,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: RockchipUsbTransportException) {
+            report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalArgumentException) {
+            report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalStateException) {
+            report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+        } finally {
+            closeSucceeded = closeSessionWithinDeadline(session)
+        }
+
+        return if (closeSucceeded) report else report.copy(requiresReconnect = true)
     }
 
     private suspend fun closeSessionWithinDeadline(session: RockchipReadOnlySession): Boolean =
@@ -211,6 +288,21 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         )
     }
 
+    private fun lbaFailureReport(
+        detail: String,
+        requiresReconnect: Boolean,
+    ): RockchipBoundedLbaProbeReport = RockchipBoundedLbaProbeReport(
+        transportMethod = transportMethod.displayName,
+        succeeded = false,
+        startSector = LBA_VALIDATION_START_SECTOR,
+        sectorCount = LBA_VALIDATION_SECTOR_COUNT,
+        bytesRead = 0,
+        sha256 = null,
+        previewHex = null,
+        detail = detail,
+        requiresReconnect = requiresReconnect,
+    )
+
     private fun transportFailure(
         spec: QuerySpec,
         detail: String,
@@ -242,6 +334,11 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         },
     )
 
+    private fun ByteArray.sha256(): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(this)
+            .joinToString("") { byte -> "%02x".format(byte) }
+
     private fun Throwable.safeMessage(): String =
         message?.take(MAXIMUM_ERROR_LENGTH)?.ifBlank { null } ?: javaClass.simpleName
 
@@ -259,6 +356,10 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
 
     private companion object {
         const val QUERY_TIMEOUT_MILLIS = 10_000L
+        const val LBA_READ_TIMEOUT_MILLIS = 10_000L
+        const val LBA_VALIDATION_START_SECTOR = 0L
+        const val LBA_VALIDATION_SECTOR_COUNT = 1
+        const val LBA_PREVIEW_BYTES = 32
         const val DEFAULT_CLOSE_TIMEOUT_MILLIS = 2_000L
         const val MAXIMUM_ERROR_LENGTH = 240
         val LOGGER: Logger = Logger.getLogger("RockchipMetadataClient")
