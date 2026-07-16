@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import org.rockservice.core.usb.UsbDeviceDescriptor
 import org.rockservice.core.usb.rockchip.AndroidRockchipReadOnlyBackupClient
 import org.rockservice.core.usb.rockchip.RockchipBackupManifestCodec
+import org.rockservice.core.usb.rockchip.RockchipBackupVerifier
 import org.rockservice.core.usb.rockchip.RockchipBoundedBackupProgress
 import org.rockservice.core.usb.rockchip.RockchipBoundedBackupResult
 import org.rockservice.core.usb.rockchip.toBackupManifest
@@ -26,10 +27,17 @@ internal sealed interface RockchipBackupState {
         val progress: RockchipBoundedBackupProgress?,
         val destinationMayContainPartialData: Boolean,
     ) : RockchipBackupState
+    data class VerifyingStoredFile(
+        val result: RockchipBoundedBackupResult,
+    ) : RockchipBackupState
     data class Completed(
         val result: RockchipBoundedBackupResult,
         val manifestExportRunning: Boolean = false,
         val manifestExportMessage: String? = null,
+    ) : RockchipBackupState
+    data class StoredFileVerificationFailed(
+        val result: RockchipBoundedBackupResult,
+        val message: String,
     ) : RockchipBackupState
     data class Failed(
         val message: String,
@@ -74,8 +82,8 @@ internal class RockchipBackupViewModel : ViewModel() {
                 destinationOpened = true
                 publishRunning(runGeneration, progress = null, destinationOpened = true)
 
-                BufferedOutputStream(rawOutput).use { output ->
-                    val result = client.backup(
+                val result = BufferedOutputStream(rawOutput).use { output ->
+                    val backupResult = client.backup(
                         device = device,
                         startSector = startSector,
                         sectorCount = sectorCount,
@@ -87,8 +95,11 @@ internal class RockchipBackupViewModel : ViewModel() {
                         },
                     )
                     output.flush()
-                    RockchipBackupState.Completed(result)
+                    backupResult
                 }
+
+                publishStoredFileVerification(runGeneration, result)
+                verifyStoredFile(contentResolver, destination, result)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: SecurityException) {
@@ -182,6 +193,47 @@ internal class RockchipBackupViewModel : ViewModel() {
         super.onCleared()
     }
 
+    private fun verifyStoredFile(
+        contentResolver: ContentResolver,
+        destination: Uri,
+        result: RockchipBoundedBackupResult,
+    ): RockchipBackupState = try {
+        val source = contentResolver.openInputStream(destination)
+            ?: throw IOException("O arquivo salvo não pode ser reaberto para verificação.")
+        val verification = source.use { input ->
+            RockchipBackupVerifier.verify(result.toBackupManifest(), input)
+        }
+        if (verification.verified) {
+            RockchipBackupState.Completed(result)
+        } else {
+            RockchipBackupState.StoredFileVerificationFailed(
+                result = result,
+                message = "O arquivo persistido diverge do backup lido. " +
+                    "Tamanho: ${if (verification.sizeMatches) "OK" else "DIVERGENTE"}; " +
+                    "SHA-256: ${if (verification.sha256Matches) "OK" else "DIVERGENTE"}. " +
+                    "Não exporte um manifesto para este arquivo; execute um novo backup em um destino confiável.",
+            )
+        }
+    } catch (_: SecurityException) {
+        RockchipBackupState.StoredFileVerificationFailed(
+            result = result,
+            message = "O backup foi salvo, mas o destino não concede leitura ao aplicativo. " +
+                "Escolha um destino SAF que permita releitura e execute um novo backup.",
+        )
+    } catch (_: IOException) {
+        RockchipBackupState.StoredFileVerificationFailed(
+            result = result,
+            message = "O backup foi salvo, mas não pôde ser relido. " +
+                "Verifique se o armazenamento continua disponível e execute um novo backup.",
+        )
+    } catch (_: IllegalArgumentException) {
+        RockchipBackupState.StoredFileVerificationFailed(
+            result = result,
+            message = "O backup foi salvo, mas os metadados de integridade são inválidos. " +
+                "Execute um novo backup; se o problema persistir, registre o erro para diagnóstico.",
+        )
+    }
+
     private fun publishRunning(
         runGeneration: Long,
         progress: RockchipBoundedBackupProgress?,
@@ -193,6 +245,16 @@ internal class RockchipBackupViewModel : ViewModel() {
                 progress = progress,
                 destinationMayContainPartialData = destinationOpened,
             )
+        }
+    }
+
+    private fun publishStoredFileVerification(
+        runGeneration: Long,
+        result: RockchipBoundedBackupResult,
+    ) {
+        synchronized(stateLock) {
+            if (runGeneration != generation) return
+            mutableState.value = RockchipBackupState.VerifyingStoredFile(result)
         }
     }
 

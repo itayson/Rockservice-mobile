@@ -77,6 +77,8 @@ class RockchipBackupActivity : ComponentActivity() {
             MaterialTheme {
                 val usbState by usbViewModel.state.collectAsState()
                 val backupState by backupViewModel.state.collectAsState()
+                val backupBusy = backupState is RockchipBackupState.Running ||
+                    backupState is RockchipBackupState.VerifyingStoredFile
                 val scope = rememberCoroutineScope()
                 var probeJob by remember { mutableStateOf<Job?>(null) }
                 var probeRunning by remember { mutableStateOf(false) }
@@ -161,7 +163,9 @@ class RockchipBackupActivity : ComponentActivity() {
                         }
 
                         item {
-                            Button(onClick = { usbViewModel.refresh(usbScanner) }) { Text("Atualizar dispositivos USB") }
+                            Button(onClick = { usbViewModel.refresh(usbScanner) }, enabled = !backupBusy) {
+                                Text("Atualizar dispositivos USB")
+                            }
                         }
 
                         when (val diagnostics = usbState.diagnostics) {
@@ -184,7 +188,7 @@ class RockchipBackupActivity : ComponentActivity() {
                                                 invalidateTargetGate()
                                                 usbViewModel.selectTarget(model.transportId)
                                             },
-                                            enabled = !selected,
+                                            enabled = !selected && !backupBusy,
                                         ) { Text(if (selected) "Alvo selecionado" else "Selecionar alvo") }
                                     }
                                 }
@@ -219,7 +223,7 @@ class RockchipBackupActivity : ComponentActivity() {
                                         }
                                     }
                                 },
-                                enabled = selectedSnapshot != null && !probeRunning && backupState !is RockchipBackupState.Running,
+                                enabled = selectedSnapshot != null && !probeRunning && !backupBusy,
                                 modifier = Modifier.fillMaxWidth(),
                             ) { Text("Validar baseline Rockchip") }
                         }
@@ -232,7 +236,7 @@ class RockchipBackupActivity : ComponentActivity() {
                                 value = startSectorText,
                                 onValueChange = { startSectorText = it.filter(Char::isDigit).take(10) },
                                 label = { Text("LBA inicial") },
-                                enabled = backupState !is RockchipBackupState.Running,
+                                enabled = !backupBusy,
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                             )
@@ -240,7 +244,7 @@ class RockchipBackupActivity : ComponentActivity() {
                                 value = sectorCountText,
                                 onValueChange = { sectorCountText = it.filter(Char::isDigit).take(7) },
                                 label = { Text("Quantidade de setores (máx. $UI_MAXIMUM_SECTORS)") },
-                                enabled = backupState !is RockchipBackupState.Running,
+                                enabled = !backupBusy,
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                             )
@@ -249,7 +253,7 @@ class RockchipBackupActivity : ComponentActivity() {
                         item {
                             Button(
                                 onClick = { createBackup.launch("rockchip-lba-${parsedStartSector ?: 0}.img") },
-                                enabled = baselinePassed && rangeValid && backupState !is RockchipBackupState.Running,
+                                enabled = baselinePassed && rangeValid && !backupBusy,
                                 modifier = Modifier.fillMaxWidth(),
                             ) { Text("Escolher destino e iniciar backup") }
                         }
@@ -269,10 +273,19 @@ class RockchipBackupActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                            is RockchipBackupState.VerifyingStoredFile -> item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        CircularProgressIndicator()
+                                        Text("Backup salvo. Revalidando o arquivo persistido por tamanho e SHA-256...")
+                                        Text("Bytes esperados: ${state.result.byteCount}")
+                                    }
+                                }
+                            }
                             is RockchipBackupState.Completed -> item {
                                 Card(modifier = Modifier.fillMaxWidth()) {
                                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text("Backup concluído", style = MaterialTheme.typography.titleMedium)
+                                        Text("Backup salvo e verificado", style = MaterialTheme.typography.titleMedium)
                                         Text("Bytes: ${state.result.byteCount}")
                                         Text("SHA-256: ${state.result.sha256}")
                                         Button(
@@ -288,6 +301,16 @@ class RockchipBackupActivity : ComponentActivity() {
                                         }
                                         if (state.manifestExportRunning) CircularProgressIndicator()
                                         state.manifestExportMessage?.let { message -> Text(message) }
+                                    }
+                                }
+                            }
+                            is RockchipBackupState.StoredFileVerificationFailed -> item {
+                                Card(modifier = Modifier.fillMaxWidth()) {
+                                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("Backup salvo, mas não verificado", style = MaterialTheme.typography.titleMedium)
+                                        Text(state.message)
+                                        Text("O manifesto permanece bloqueado. Não trate este arquivo como backup íntegro até uma verificação bem-sucedida.")
+                                        Text("SHA-256 calculado durante a leitura USB: ${state.result.sha256}")
                                     }
                                 }
                             }
