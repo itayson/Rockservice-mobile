@@ -52,13 +52,17 @@ internal class AndroidAdbUsbTransport(
 
     override suspend fun send(message: AdbMessage, timeoutMillis: Long) {
         require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
+        val ioDeadlineNanos = ioDeadlineAfter(timeoutMillis)
         withTimeout(timeoutMillis) {
             sendMutex.withLock {
                 check(!closed.get()) { "ADB USB transport is closed." }
                 currentCoroutineContext().ensureActive()
                 val frame = AdbProtocolCodec.encode(message)
                 withContext(Dispatchers.IO) {
-                    io.writeExactly(frame, ioOperationTimeout(timeoutMillis))
+                    io.writeExactly(
+                        frame,
+                        remainingIoTimeout(ioDeadlineNanos, "ADB USB send"),
+                    )
                 }
                 currentCoroutineContext().ensureActive()
             }
@@ -70,14 +74,17 @@ internal class AndroidAdbUsbTransport(
         requireChecksum: Boolean,
     ): AdbMessage {
         require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
+        val ioDeadlineNanos = ioDeadlineAfter(timeoutMillis)
         return withTimeout(timeoutMillis) {
             receiveMutex.withLock {
                 check(!closed.get()) { "ADB USB transport is closed." }
-                val ioTimeout = ioOperationTimeout(timeoutMillis)
                 currentCoroutineContext().ensureActive()
 
                 val headerBytes = withContext(Dispatchers.IO) {
-                    io.readExactly(AdbProtocolCodec.HEADER_SIZE_BYTES, ioTimeout)
+                    io.readExactly(
+                        AdbProtocolCodec.HEADER_SIZE_BYTES,
+                        remainingIoTimeout(ioDeadlineNanos, "ADB USB receive header"),
+                    )
                 }
                 val header = AdbProtocolCodec.decodeHeader(headerBytes)
                 currentCoroutineContext().ensureActive()
@@ -85,7 +92,10 @@ internal class AndroidAdbUsbTransport(
                     ByteArray(0)
                 } else {
                     withContext(Dispatchers.IO) {
-                        io.readExactly(header.dataLength, ioTimeout)
+                        io.readExactly(
+                            header.dataLength,
+                            remainingIoTimeout(ioDeadlineNanos, "ADB USB receive payload"),
+                        )
                     }
                 }
                 currentCoroutineContext().ensureActive()
@@ -107,14 +117,26 @@ internal class AndroidAdbUsbTransport(
         }
     }
 
-    private fun ioOperationTimeout(timeoutMillis: Long): Int =
-        (timeoutMillis - IO_TIMEOUT_MARGIN_MILLIS)
+    private fun ioDeadlineAfter(timeoutMillis: Long): Long {
+        val boundedTimeoutMillis = (timeoutMillis - IO_TIMEOUT_MARGIN_MILLIS)
+            .coerceAtLeast(1L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+        return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(boundedTimeoutMillis)
+    }
+
+    private fun remainingIoTimeout(deadlineNanos: Long, operation: String): Int {
+        val remainingNanos = deadlineNanos - System.nanoTime()
+        check(remainingNanos > 0L) { "$operation exceeded its total timeout before blocking I/O started." }
+        val remainingMillis = (remainingNanos + NANOS_PER_MILLISECOND - 1L) / NANOS_PER_MILLISECOND
+        return remainingMillis
             .coerceAtLeast(1L)
             .coerceAtMost(Int.MAX_VALUE.toLong())
             .toInt()
+    }
 
     private companion object {
         const val IO_TIMEOUT_MARGIN_MILLIS = 250L
+        const val NANOS_PER_MILLISECOND = 1_000_000L
     }
 }
 
