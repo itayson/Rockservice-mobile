@@ -52,6 +52,30 @@ class FirmwareLabRawFilesystemIntegrationTest {
     }
 
     @Test
+    fun `malformed raw filesystem candidate is reported without aborting the lab report`() {
+        val bytes = ByteArray(4096)
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).putInt(1024, 0xE0F5E1E2.toInt())
+        bytes[1024 + 12] = 2
+        var openCount = 0
+
+        val report = FirmwareLabAnalyzer().analyze(
+            displayName = "corrupt-erofs.img",
+            declaredSizeBytes = bytes.size.toLong(),
+        ) {
+            openCount += 1
+            ByteArrayInputStream(bytes)
+        }
+
+        assertEquals(FirmwareFormat.UNKNOWN, report.detectedFormat)
+        assertEquals(2, openCount)
+        assertEquals(64, report.sha256.length)
+        val rejected = report.sections.single { section -> section.title == "Candidato a filesystem raw rejeitado" }
+        assertTrue(rejected.lines.any { line -> line.contains("blkszbits") })
+        assertTrue(rejected.lines.any { line -> line.contains("SHA-256 integral") })
+        assertTrue(report.sections.any { section -> section.title == "Resumo" })
+    }
+
+    @Test
     fun `tiny unknown input skips raw filesystem second pass`() {
         val bytes = "abc".toByteArray()
         var openCount = 0
