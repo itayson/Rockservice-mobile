@@ -81,6 +81,25 @@ class AndroidSuperLogicalPartitionMapperTest {
     }
 
     @Test
+    fun `rejects unsupported extent target with actionable message`() {
+        val metadata = metadata(
+            partitions = listOf(
+                partition(name = "bad-target", firstExtentIndex = 0, extentCount = 1, logicalSizeBytes = 512),
+            ),
+            extents = listOf(
+                extent(sectorCount = 1, targetType = 99, targetData = 0, targetSource = 0),
+            ),
+        )
+
+        val error = expectIllegalArgument {
+            AndroidSuperLogicalPartitionMapper().map(metadata)
+        }
+
+        assertTrue(error.message.orEmpty().contains("target não suportado", ignoreCase = true))
+        assertTrue(error.message.orEmpty().contains("99"))
+    }
+
+    @Test
     fun `rejects sector to byte overflow`() {
         val metadata = metadata(
             partitions = listOf(
