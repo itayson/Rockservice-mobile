@@ -10,12 +10,12 @@ class AndroidSuperLogicalPartitionMapperTest {
     fun `maps mixed linear and zero extents in partition order`() {
         val metadata = metadata(
             partitions = listOf(
-                AndroidSuperPartition("system", 0, 0, 3, 0),
+                partition(name = "system", firstExtentIndex = 0, extentCount = 3, logicalSizeBytes = 6L * 512L),
             ),
             extents = listOf(
-                AndroidSuperExtent(2, AndroidSuperExtentTargetType.LINEAR, 100, 0),
-                AndroidSuperExtent(1, AndroidSuperExtentTargetType.ZERO, 0, 0),
-                AndroidSuperExtent(3, AndroidSuperExtentTargetType.LINEAR, 200, 0),
+                extent(sectorCount = 2, targetType = 0, targetData = 100, targetSource = 0),
+                extent(sectorCount = 1, targetType = 1, targetData = 0, targetSource = 0),
+                extent(sectorCount = 3, targetType = 0, targetData = 200, targetSource = 0),
             ),
         )
 
@@ -32,7 +32,7 @@ class AndroidSuperLogicalPartitionMapperTest {
             ),
             plan.extents[0],
         )
-        assertEquals(AndroidSuperLogicalExtentPlan.Zero(512), plan.extents[1])
+        assertEquals(AndroidSuperLogicalExtentPlan.Zero(512L), plan.extents[1])
         assertEquals(
             AndroidSuperLogicalExtentPlan.Linear(
                 blockDeviceIndex = 0,
@@ -46,7 +46,7 @@ class AndroidSuperLogicalPartitionMapperTest {
     @Test
     fun `maps empty partition to zero length plan`() {
         val metadata = metadata(
-            partitions = listOf(AndroidSuperPartition("empty", 0, 0, 0, 0)),
+            partitions = listOf(partition(name = "empty", firstExtentIndex = 0, extentCount = 0, logicalSizeBytes = 0)),
             extents = emptyList(),
         )
 
@@ -59,8 +59,8 @@ class AndroidSuperLogicalPartitionMapperTest {
     @Test
     fun `rejects partition extent range outside table`() {
         val metadata = metadata(
-            partitions = listOf(AndroidSuperPartition("bad", 0, 1, 2, 0)),
-            extents = listOf(AndroidSuperExtent(1, AndroidSuperExtentTargetType.ZERO, 0, 0)),
+            partitions = listOf(partition(name = "bad", firstExtentIndex = 1, extentCount = 2, logicalSizeBytes = 1024)),
+            extents = listOf(extent(sectorCount = 1, targetType = 1, targetData = 0, targetSource = 0)),
         )
 
         expectIllegalArgument {
@@ -71,8 +71,8 @@ class AndroidSuperLogicalPartitionMapperTest {
     @Test
     fun `rejects linear extent with invalid block device source`() {
         val metadata = metadata(
-            partitions = listOf(AndroidSuperPartition("bad", 0, 0, 1, 0)),
-            extents = listOf(AndroidSuperExtent(1, AndroidSuperExtentTargetType.LINEAR, 0, 3)),
+            partitions = listOf(partition(name = "bad", firstExtentIndex = 0, extentCount = 1, logicalSizeBytes = 512)),
+            extents = listOf(extent(sectorCount = 1, targetType = 0, targetData = 0, targetSource = 3)),
         )
 
         expectIllegalArgument {
@@ -83,10 +83,29 @@ class AndroidSuperLogicalPartitionMapperTest {
     @Test
     fun `rejects sector to byte overflow`() {
         val metadata = metadata(
-            partitions = listOf(AndroidSuperPartition("huge", 0, 0, 1, 0)),
-            extents = listOf(
-                AndroidSuperExtent(Long.MAX_VALUE, AndroidSuperExtentTargetType.ZERO, 0, 0),
+            partitions = listOf(
+                partition(
+                    name = "huge",
+                    firstExtentIndex = 0,
+                    extentCount = 1,
+                    logicalSizeBytes = Long.MAX_VALUE,
+                ),
             ),
+            extents = listOf(
+                extent(sectorCount = Long.MAX_VALUE, targetType = 1, targetData = 0, targetSource = 0),
+            ),
+        )
+
+        expectIllegalArgument {
+            AndroidSuperLogicalPartitionMapper().map(metadata)
+        }
+    }
+
+    @Test
+    fun `rejects logical size mismatch`() {
+        val metadata = metadata(
+            partitions = listOf(partition(name = "bad", firstExtentIndex = 0, extentCount = 1, logicalSizeBytes = 1024)),
+            extents = listOf(extent(sectorCount = 1, targetType = 1, targetData = 0, targetSource = 0)),
         )
 
         expectIllegalArgument {
@@ -97,7 +116,7 @@ class AndroidSuperLogicalPartitionMapperTest {
     @Test
     fun `rejects missing named partition`() {
         val metadata = metadata(
-            partitions = listOf(AndroidSuperPartition("system", 0, 0, 0, 0)),
+            partitions = listOf(partition(name = "system", firstExtentIndex = 0, extentCount = 0, logicalSizeBytes = 0)),
             extents = emptyList(),
         )
 
@@ -108,9 +127,35 @@ class AndroidSuperLogicalPartitionMapperTest {
         assertTrue(error.message.orEmpty().contains("vendor"))
     }
 
+    private fun partition(
+        name: String,
+        firstExtentIndex: Int,
+        extentCount: Int,
+        logicalSizeBytes: Long,
+    ): AndroidLogicalPartitionMetadata = AndroidLogicalPartitionMetadata(
+        name = name,
+        attributes = 0,
+        firstExtentIndex = firstExtentIndex,
+        extentCount = extentCount,
+        groupIndex = 0,
+        logicalSizeBytes = logicalSizeBytes,
+    )
+
+    private fun extent(
+        sectorCount: Long,
+        targetType: Int,
+        targetData: Long,
+        targetSource: Int,
+    ): AndroidLogicalExtentMetadata = AndroidLogicalExtentMetadata(
+        sectorCount = sectorCount,
+        targetType = targetType,
+        targetData = targetData,
+        targetSource = targetSource,
+    )
+
     private fun metadata(
-        partitions: List<AndroidSuperPartition>,
-        extents: List<AndroidSuperExtent>,
+        partitions: List<AndroidLogicalPartitionMetadata>,
+        extents: List<AndroidLogicalExtentMetadata>,
     ): AndroidSuperMetadata {
         val emptyDescriptor = AndroidSuperTableDescriptor(0, 0, 0)
         return AndroidSuperMetadata(
@@ -136,11 +181,11 @@ class AndroidSuperLogicalPartitionMapperTest {
             extents = extents,
             groups = emptyList(),
             blockDevices = listOf(
-                AndroidSuperBlockDevice(
+                AndroidSuperBlockDeviceMetadata(
                     firstLogicalSector = 0,
                     alignmentBytes = 4096,
                     alignmentOffsetBytes = 0,
-                    sizeBytes = 1024 * 1024,
+                    sizeBytes = 1024L * 1024L,
                     partitionName = "super",
                     flags = 0,
                 ),
