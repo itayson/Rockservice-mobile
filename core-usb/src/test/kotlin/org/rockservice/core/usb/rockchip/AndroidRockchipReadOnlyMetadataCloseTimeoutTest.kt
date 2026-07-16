@@ -5,8 +5,11 @@ import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.rockservice.core.usb.UsbDeviceDescriptor
@@ -46,6 +49,33 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
             assertTrue(secondReport.requiresReconnect)
             assertEquals(4, secondReport.entries.size)
             assertTrue(secondReport.entries.all { entry -> !entry.attempted })
+
+            transport.releaseClose.countDown()
+            assertTrue(transport.closeFinished.await(1, TimeUnit.SECONDS))
+
+            val recoveryTransport = ImmediateCloseTransport()
+            val recoveryOpenCount = AtomicInteger(0)
+            val recoveryClient = AndroidRockchipReadOnlyMetadataClient(
+                opener = RockchipReadOnlyTransportOpener {
+                    recoveryOpenCount.incrementAndGet()
+                    recoveryTransport
+                },
+                transportMethod = RockchipUsbIoMethod.USB_REQUEST,
+                closeTimeoutMillis = 100L,
+            )
+            val recoveryReport = withTimeout(1_000L) {
+                while (true) {
+                    val report = recoveryClient.probe(testDevice())
+                    if (recoveryOpenCount.get() > 0) return@withTimeout report
+                    delay(10L)
+                }
+                error("unreachable")
+            }
+
+            assertEquals(1, recoveryOpenCount.get())
+            assertTrue(recoveryReport.entries.all(RockchipMetadataProbeEntry::succeeded))
+            assertFalse(recoveryReport.requiresReconnect)
+            assertEquals(1, recoveryTransport.closeCount.get())
         } finally {
             transport.releaseClose.countDown()
             assertTrue(transport.closeFinished.await(1, TimeUnit.SECONDS))
@@ -72,13 +102,7 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
             command: ByteArray,
             responseLengthRange: IntRange,
             timeoutMillis: Long,
-        ): RockchipRawExchange {
-            val tag = ByteBuffer.wrap(command).order(ByteOrder.LITTLE_ENDIAN).getInt(4)
-            return RockchipRawExchange(
-                data = ByteArray(responseLengthRange.first),
-                statusBytes = successfulCsw(tag),
-            )
-        }
+        ): RockchipRawExchange = successfulExchange(command, responseLengthRange)
 
         override suspend fun close() {
             closeCount.incrementAndGet()
@@ -95,8 +119,32 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
                 closeFinished.countDown()
             }
         }
+    }
 
-        private fun successfulCsw(tag: Int): ByteArray =
+    private class ImmediateCloseTransport : RockchipReadOnlyTransport {
+        val closeCount = AtomicInteger(0)
+
+        override suspend fun exchange(
+            command: ByteArray,
+            responseLengthRange: IntRange,
+            timeoutMillis: Long,
+        ): RockchipRawExchange = successfulExchange(command, responseLengthRange)
+
+        override suspend fun close() {
+            closeCount.incrementAndGet()
+        }
+    }
+
+    private companion object {
+        fun successfulExchange(command: ByteArray, responseLengthRange: IntRange): RockchipRawExchange {
+            val tag = ByteBuffer.wrap(command).order(ByteOrder.LITTLE_ENDIAN).getInt(4)
+            return RockchipRawExchange(
+                data = ByteArray(responseLengthRange.first),
+                statusBytes = successfulCsw(tag),
+            )
+        }
+
+        fun successfulCsw(tag: Int): ByteArray =
             ByteArray(RockchipReadOnlyProtocolCodec.COMMAND_STATUS_WRAPPER_SIZE).also { bytes ->
                 val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
                 buffer.putInt(0, 0x53425355)
