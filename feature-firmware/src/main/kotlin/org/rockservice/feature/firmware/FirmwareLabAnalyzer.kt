@@ -9,7 +9,7 @@ internal data class FirmwareLabParserOperations(
     val parseBoot: (InputStream) -> AndroidBootImageMetadata,
     val parseSuper: (InputStream, AndroidSuperMetadataCopy) -> AndroidSuperMetadata,
     val parseSparseSuper: (() -> InputStream) -> AndroidSuperMetadata?,
-    val inspectRawFilesystem: (InputStream) -> RawFilesystemInspection,
+    val inspectRawFilesystem: (InputStream) -> RawFilesystemInspection = RawFilesystemInspector()::inspect,
 )
 
 /**
