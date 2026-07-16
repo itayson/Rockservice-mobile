@@ -24,12 +24,13 @@ class AndroidSparseSuperMetadataParserTest {
         assertNotNull(metadata)
         requireNotNull(metadata)
         assertEquals(4096L, metadata.geometry.metadataMaxSizeBytes)
-        assertEquals(1L, metadata.geometry.metadataSlotCount)
+        assertEquals(1, metadata.geometry.metadataSlotCount)
         assertEquals(4096L, metadata.geometry.logicalBlockSizeBytes)
         assertEquals(0, metadata.partitions.size)
         assertEquals(0, metadata.extents.size)
         assertEquals(0, metadata.groups.size)
-        assertEquals(0, metadata.blockDevices.size)
+        assertEquals(1, metadata.blockDevices.size)
+        assertEquals("super", metadata.blockDevices.single().partitionName)
     }
 
     @Test
@@ -101,30 +102,49 @@ class AndroidSparseSuperMetadataParserTest {
     }
 
     private fun metadataSlot(metadataMaxSize: Int): ByteArray {
+        val blockDeviceTable = ByteArray(64)
+        ByteBuffer.wrap(blockDeviceTable).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putLong(0, 40L)
+            putInt(8, 4096)
+            putInt(12, 0)
+            putLong(16, 64L * 1024 * 1024)
+            "super".toByteArray(Charsets.US_ASCII).copyInto(blockDeviceTable, destinationOffset = 24)
+            putInt(60, 0)
+        }
+
         val header = ByteArray(128)
         val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
         buffer.putInt(0, 0x414C5030)
         buffer.putShort(4, 10)
         buffer.putShort(6, 0)
         buffer.putInt(8, 128)
-        buffer.putInt(44, 0)
-        sha256(ByteArray(0)).copyInto(header, destinationOffset = 48)
-        putTableDescriptor(header, offset = 80, entrySize = 52)
-        putTableDescriptor(header, offset = 92, entrySize = 24)
-        putTableDescriptor(header, offset = 104, entrySize = 48)
-        putTableDescriptor(header, offset = 116, entrySize = 64)
+        buffer.putInt(44, blockDeviceTable.size)
+        sha256(blockDeviceTable).copyInto(header, destinationOffset = 48)
+        putTableDescriptor(header, offset = 80, entryOffset = 0, entryCount = 0, entrySize = 52)
+        putTableDescriptor(header, offset = 92, entryOffset = 0, entryCount = 0, entrySize = 24)
+        putTableDescriptor(header, offset = 104, entryOffset = 0, entryCount = 0, entrySize = 48)
+        putTableDescriptor(header, offset = 116, entryOffset = 0, entryCount = 1, entrySize = 64)
 
         val headerForChecksum = header.copyOf()
         headerForChecksum.fill(0, fromIndex = 12, toIndex = 44)
         sha256(headerForChecksum).copyInto(header, destinationOffset = 12)
 
-        return ByteArray(metadataMaxSize).also { slot -> header.copyInto(slot) }
+        return ByteArray(metadataMaxSize).also { slot ->
+            header.copyInto(slot)
+            blockDeviceTable.copyInto(slot, destinationOffset = header.size)
+        }
     }
 
-    private fun putTableDescriptor(bytes: ByteArray, offset: Int, entrySize: Int) {
+    private fun putTableDescriptor(
+        bytes: ByteArray,
+        offset: Int,
+        entryOffset: Int,
+        entryCount: Int,
+        entrySize: Int,
+    ) {
         val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putInt(offset, 0)
-        buffer.putInt(offset + 4, 0)
+        buffer.putInt(offset, entryOffset)
+        buffer.putInt(offset + 4, entryCount)
         buffer.putInt(offset + 8, entrySize)
     }
 
