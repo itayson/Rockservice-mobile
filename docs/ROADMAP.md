@@ -24,11 +24,13 @@ Entregue:
 - painel de diagnóstico USB;
 - seleção explícita de alvo;
 - lifecycle USB e attach/detach;
-- ViewModel e coordenador testável para remover o estado operacional USB da `Activity`.
+- ViewModel e coordenador testável para remover o estado operacional USB da `Activity`;
+- relatório sanitizado de validação de hardware com exportação controlada;
+- invalidação de jobs e resultados obsoletos ao trocar o alvo.
 
 Pendente:
 
-- logs estruturados e exportação de relatório;
+- logs estruturados;
 - casos de uso adicionais para futuros fluxos críticos;
 - banco local quando existir requisito de persistência.
 
@@ -68,7 +70,7 @@ Planejado:
 
 ## Fase 4 — Rockchip somente leitura
 
-**Estado: em andamento, bloqueada por validação de hardware para transporte real.**
+**Estado: em andamento. Transporte real, baseline ativo e primeira leitura LBA limitada já foram validados em hardware autorizado; a expansão continua protegida por gates.**
 
 Entregue:
 
@@ -79,15 +81,21 @@ Entregue:
 - probe conservador por VID/topologia;
 - seleção de alvo e monitoramento attach/detach;
 - codec CBW/CSW com allowlist de consultas de metadados;
-- sessão abstrata serializada sem transporte físico;
-- parsers defensivos de chip, flash e storage.
+- transporte Android Rockchip real somente leitura com sessão serializada e fechamento controlado;
+- baseline ativo validado em hardware autorizado com `TEST_UNIT_READY`, `READ_CHIP_INFO`, `READ_FLASH_ID` e `READ_FLASH_INFO`;
+- tratamento fail-closed para timeout, perda de sincronização e necessidade de reconexão;
+- `READ_LBA` limitado localmente a no máximo 32 setores por transação;
+- prova física e interface controlada para leitura fixa de exatamente 1 setor no LBA 0;
+- proteção contra resultados obsoletos, leituras concorrentes e repetição após falha que exige reconexão;
+- plano e parser puro preparatórios para inspeção fixa de LBA 0–1 e detecção sanitizada de assinaturas MBR/GPT, rastreados em `#35`.
 
 Próximos gates:
 
-1. concluir a matriz de hardware de `#18`;
-2. implementar o transporte real somente leitura de `#19`;
-3. validar em hardware autorizado antes de expor consultas ativas na UI;
-4. somente depois estudar leitura de dados/partições e backup.
+1. concluir a matriz de hardware de `#18`, incluindo dispositivo não-Rockchip e evidência explícita de attach/detach;
+2. concluir formalmente o checklist de `#19`, cujo transporte e baseline ativo já possuem evidência em hardware autorizado;
+3. integrar e validar em hardware autorizado a inspeção fixa de exatamente 2 setores (LBA 0–1) de `#35`, sem LBA configurável e sem persistência automática de bytes brutos;
+4. somente após `#35`, projetar leitura estritamente limitada das estruturas necessárias para mapear tabelas de partição, com limites derivados e validados;
+5. manter backup de partições bloqueado até existir mapeamento confiável, validação de tamanho/faixa, política de destino, retomada segura e verificação de integridade.
 
 ## Fase 5 — Gravação experimental
 
