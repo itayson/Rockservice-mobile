@@ -32,13 +32,19 @@ class AndroidBootSectionExtractor(
         require(bufferSizeBytes > 0) { "bufferSizeBytes deve ser maior que zero." }
     }
 
-    /** Extracts exactly one non-header section and verifies that the source still matches its SHA-256. */
+    /**
+     * Extracts exactly one non-header section and verifies that the source still matches its SHA-256.
+     *
+     * [checkpoint] is invoked before potentially blocking reads and before/after destination writes.
+     * Exceptions raised by the callback are intentionally propagated so callers can cancel promptly.
+     */
     fun extract(
         source: InputStream,
         metadata: AndroidBootImageMetadata,
         expectedSourceSha256: String,
         sectionType: AndroidBootSectionType,
         destination: OutputStream,
+        checkpoint: () -> Unit = {},
     ): AndroidBootSectionExtractionReport {
         require(sectionType != AndroidBootSectionType.HEADER) {
             "A extração controlada não expõe a seção HEADER neste gate."
@@ -78,9 +84,12 @@ class AndroidBootSectionExtractor(
         var extractedBytes = 0L
 
         while (true) {
+            checkpoint()
             val remainingAllowance = maximumInputBytes - sourceOffset
             if (remainingAllowance == 0L) {
+                checkpoint()
                 val overflowByte = source.read()
+                checkpoint()
                 require(overflowByte < 0) {
                     "A imagem Android Boot excede o limite de leitura de $maximumInputBytes bytes."
                 }
@@ -89,10 +98,12 @@ class AndroidBootSectionExtractor(
 
             val request = minOf(buffer.size.toLong(), remainingAllowance).toInt()
             val read = source.read(buffer, 0, request)
+            checkpoint()
             when {
                 read < 0 -> break
                 read == 0 -> {
                     val single = source.read()
+                    checkpoint()
                     if (single < 0) break
                     buffer[0] = single.toByte()
                     processBufferRange(
@@ -103,6 +114,7 @@ class AndroidBootSectionExtractor(
                         destination = destination,
                         sourceDigest = sourceDigest,
                         sectionDigest = sectionDigest,
+                        checkpoint = checkpoint,
                     ).also { extractedBytes += it }
                     sourceOffset += 1L
                 }
@@ -115,12 +127,14 @@ class AndroidBootSectionExtractor(
                         destination = destination,
                         sourceDigest = sourceDigest,
                         sectionDigest = sectionDigest,
+                        checkpoint = checkpoint,
                     ).also { extractedBytes += it }
                     sourceOffset += read.toLong()
                 }
             }
         }
 
+        checkpoint()
         require(sourceOffset >= metadata.minimumImageSizeBytes) {
             "Imagem Android Boot truncada: lidos $sourceOffset bytes; layout mínimo exige " +
                 "${metadata.minimumImageSizeBytes}."
@@ -133,6 +147,7 @@ class AndroidBootSectionExtractor(
         require(actualSourceSha256 == normalizedExpectedHash) {
             "A imagem Android Boot mudou desde a análise: SHA-256 atual não corresponde ao esperado."
         }
+        checkpoint()
 
         return AndroidBootSectionExtractionReport(
             sectionType = sectionType,
@@ -152,6 +167,7 @@ class AndroidBootSectionExtractor(
         destination: OutputStream,
         sourceDigest: MessageDigest,
         sectionDigest: MessageDigest,
+        checkpoint: () -> Unit,
     ): Long {
         sourceDigest.update(buffer, 0, byteCount)
 
@@ -163,7 +179,9 @@ class AndroidBootSectionExtractor(
 
         val startInBuffer = (overlapStart - sourceOffset).toInt()
         val overlapLength = (overlapEnd - overlapStart).toInt()
+        checkpoint()
         destination.write(buffer, startInBuffer, overlapLength)
+        checkpoint()
         sectionDigest.update(buffer, startInBuffer, overlapLength)
         return overlapLength.toLong()
     }
