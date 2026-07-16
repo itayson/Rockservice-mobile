@@ -51,6 +51,7 @@ internal data class HardwareValidationScreenState(
 /** Owns passive hardware-validation evidence without retaining Android USB transport identifiers. */
 internal class HardwareValidationViewModel : ViewModel() {
     private val mutableState = MutableStateFlow(HardwareValidationScreenState())
+    private val stateLock = Any()
     private var validationJob: Job? = null
     private var metadataProbeJob: Job? = null
     private var exportJob: Job? = null
@@ -58,6 +59,8 @@ internal class HardwareValidationViewModel : ViewModel() {
     private var validationGeneration: Long = 0L
     @Volatile
     private var metadataProbeGeneration: Long = 0L
+    @Volatile
+    private var exportGeneration: Long = 0L
 
     val state = mutableState.asStateFlow()
 
@@ -76,13 +79,17 @@ internal class HardwareValidationViewModel : ViewModel() {
     fun invalidateActiveTarget() {
         validationJob?.cancel()
         metadataProbeJob?.cancel()
-        validationGeneration += 1L
-        metadataProbeGeneration += 1L
-        mutableState.value = mutableState.value.copy(
-            runState = HardwareValidationRunState.Idle,
-            metadataProbeState = RockchipMetadataProbeState.Idle,
-            exportMessage = null,
-        )
+        exportJob?.cancel()
+        synchronized(stateLock) {
+            validationGeneration += 1L
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+            mutableState.value = mutableState.value.copy(
+                runState = HardwareValidationRunState.Idle,
+                metadataProbeState = RockchipMetadataProbeState.Idle,
+                exportMessage = null,
+            )
+        }
     }
 
     fun recordAttachmentEvent(kind: UsbAttachmentEventKind) {
@@ -92,14 +99,19 @@ internal class HardwareValidationViewModel : ViewModel() {
         )
         validationJob?.cancel()
         metadataProbeJob?.cancel()
-        validationGeneration += 1L
-        metadataProbeGeneration += 1L
-        mutableState.value = mutableState.value.copy(
-            events = (mutableState.value.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
-            runState = HardwareValidationRunState.Idle,
-            metadataProbeState = RockchipMetadataProbeState.Idle,
-            exportMessage = null,
-        )
+        exportJob?.cancel()
+        synchronized(stateLock) {
+            validationGeneration += 1L
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+            val current = mutableState.value
+            mutableState.value = current.copy(
+                events = (current.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
+                runState = HardwareValidationRunState.Idle,
+                metadataProbeState = RockchipMetadataProbeState.Idle,
+                exportMessage = null,
+            )
+        }
     }
 
     fun runValidation(
@@ -109,14 +121,19 @@ internal class HardwareValidationViewModel : ViewModel() {
     ) {
         validationJob?.cancel()
         metadataProbeJob?.cancel()
-        metadataProbeGeneration += 1L
-        val generation = ++validationGeneration
-        val stateAtStart = mutableState.value
-        mutableState.value = stateAtStart.copy(
-            runState = HardwareValidationRunState.Running,
-            metadataProbeState = RockchipMetadataProbeState.Idle,
-            exportMessage = null,
-        )
+        exportJob?.cancel()
+        val generation = synchronized(stateLock) {
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+            val nextGeneration = ++validationGeneration
+            val stateAtStart = mutableState.value
+            mutableState.value = stateAtStart.copy(
+                runState = HardwareValidationRunState.Running,
+                metadataProbeState = RockchipMetadataProbeState.Idle,
+                exportMessage = null,
+            )
+            nextGeneration
+        }
         validationJob = viewModelScope.launch(Dispatchers.IO) {
             val check = try {
                 val bytes = backend.read(
@@ -152,21 +169,23 @@ internal class HardwareValidationViewModel : ViewModel() {
                 failedCheck("Falha inesperada ${error.javaClass.simpleName}: ${error.message ?: "sem detalhe"}.")
             }
 
-            if (generation != validationGeneration) return@launch
-            val latest = mutableState.value
-            val report = UsbHardwareValidationReport(
-                generatedAtEpochMillis = System.currentTimeMillis(),
-                host = hostInfo,
-                notes = UsbHardwareValidationNotes(
-                    boardOrDeviceModel = latest.boardOrDeviceModel,
-                    knownSoc = latest.knownSoc,
-                    otgAdapter = latest.otgAdapter,
-                ),
-                device = UsbHardwareValidationDevice.from(snapshot),
-                descriptorCheck = check,
-                events = latest.events,
-            )
-            mutableState.value = latest.copy(runState = HardwareValidationRunState.Ready(report))
+            synchronized(stateLock) {
+                if (generation != validationGeneration) return@synchronized
+                val latest = mutableState.value
+                val report = UsbHardwareValidationReport(
+                    generatedAtEpochMillis = System.currentTimeMillis(),
+                    host = hostInfo,
+                    notes = UsbHardwareValidationNotes(
+                        boardOrDeviceModel = latest.boardOrDeviceModel,
+                        knownSoc = latest.knownSoc,
+                        otgAdapter = latest.otgAdapter,
+                    ),
+                    device = UsbHardwareValidationDevice.from(snapshot),
+                    descriptorCheck = check,
+                    events = latest.events,
+                )
+                mutableState.value = latest.copy(runState = HardwareValidationRunState.Ready(report))
+            }
         }
     }
 
@@ -175,12 +194,15 @@ internal class HardwareValidationViewModel : ViewModel() {
         snapshot: UsbDiagnosticsDeviceSnapshot,
         client: AndroidRockchipReadOnlyMetadataClient,
     ) {
-        val validation = mutableState.value.runState as? HardwareValidationRunState.Ready ?: return
-        if (!validation.report.descriptorCheck.succeeded) return
-
         metadataProbeJob?.cancel()
-        val generation = ++metadataProbeGeneration
-        mutableState.value = mutableState.value.copy(metadataProbeState = RockchipMetadataProbeState.Running)
+        val generation = synchronized(stateLock) {
+            val validation = mutableState.value.runState as? HardwareValidationRunState.Ready
+                ?: return
+            if (!validation.report.descriptorCheck.succeeded) return
+            val nextGeneration = ++metadataProbeGeneration
+            mutableState.value = mutableState.value.copy(metadataProbeState = RockchipMetadataProbeState.Running)
+            nextGeneration
+        }
         metadataProbeJob = viewModelScope.launch(Dispatchers.IO) {
             val nextState = try {
                 RockchipMetadataProbeState.Ready(client.probe(snapshot.descriptor))
@@ -192,40 +214,53 @@ internal class HardwareValidationViewModel : ViewModel() {
                         ?: "Falha inesperada ${error.javaClass.simpleName} no probe de metadados.",
                 )
             }
-            if (generation != metadataProbeGeneration) return@launch
-            mutableState.value = mutableState.value.copy(metadataProbeState = nextState)
+            synchronized(stateLock) {
+                if (generation != metadataProbeGeneration) return@synchronized
+                mutableState.value = mutableState.value.copy(metadataProbeState = nextState)
+            }
         }
     }
 
     fun exportReport(contentResolver: ContentResolver, uri: Uri) {
-        val report = (mutableState.value.runState as? HardwareValidationRunState.Ready)?.report ?: return
         exportJob?.cancel()
+        val export = synchronized(stateLock) {
+            val report = (mutableState.value.runState as? HardwareValidationRunState.Ready)?.report
+                ?: return
+            val generation = ++exportGeneration
+            mutableState.value = mutableState.value.copy(exportMessage = null)
+            report to generation
+        }
+        val report = export.first
+        val generation = export.second
         exportJob = viewModelScope.launch(Dispatchers.IO) {
-            try {
+            val message = try {
                 val output = contentResolver.openOutputStream(uri, "wt")
                     ?: throw IOException("O destino selecionado nao pode ser aberto.")
                 output.bufferedWriter(Charsets.UTF_8).use { writer -> writer.write(report.toPlainText()) }
-                mutableState.value = mutableState.value.copy(exportMessage = "Relatorio de validacao exportado.")
+                "Relatorio de validacao exportado."
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: SecurityException) {
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = "O Android negou acesso ao destino do relatorio.",
-                )
+                "O Android negou acesso ao destino do relatorio."
             } catch (error: IOException) {
-                mutableState.value = mutableState.value.copy(
-                    exportMessage = error.message ?: "Falha ao exportar o relatorio.",
-                )
+                error.message ?: "Falha ao exportar o relatorio."
+            }
+            synchronized(stateLock) {
+                if (generation != exportGeneration) return@synchronized
+                mutableState.value = mutableState.value.copy(exportMessage = message)
             }
         }
     }
 
     override fun onCleared() {
-        validationGeneration += 1L
-        metadataProbeGeneration += 1L
         validationJob?.cancel()
         metadataProbeJob?.cancel()
         exportJob?.cancel()
+        synchronized(stateLock) {
+            validationGeneration += 1L
+            metadataProbeGeneration += 1L
+            exportGeneration += 1L
+        }
         super.onCleared()
     }
 
