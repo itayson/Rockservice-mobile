@@ -5,6 +5,7 @@ import java.nio.ByteOrder
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.rockservice.core.usb.UsbDeviceDescriptor
@@ -51,6 +52,60 @@ class AndroidRockchipReadOnlyMetadataClientTest {
         assertEquals(1, transport.closeCount)
     }
 
+    @Test
+    fun `partition header inspection reads exactly two sectors and returns sanitized evidence`() = runTest {
+        val payload = ByteArray(RockchipPartitionHeaderInspector.EXPECTED_BYTES).also { data ->
+            data[510] = 0x55
+            data[511] = 0xAA.toByte()
+            "EFI PART".encodeToByteArray().copyInto(data, destinationOffset = 512)
+        }
+        val transport = RecordingTransport(readLbaPayload = payload)
+        var openCount = 0
+        val client = AndroidRockchipReadOnlyMetadataClient(
+            opener = RockchipReadOnlyTransportOpener {
+                openCount += 1
+                transport
+            },
+            transportMethod = RockchipUsbIoMethod.USB_REQUEST,
+        )
+
+        val report = client.inspectPartitionHeaders(testDevice())
+
+        assertEquals(1, openCount)
+        assertEquals(listOf(0x14), transport.opcodes)
+        assertEquals(listOf(1024..1024), transport.responseLengthRanges)
+        assertTrue(report.succeeded)
+        assertEquals(0L, report.startSector)
+        assertEquals(2, report.sectorCount)
+        assertEquals(1024, report.bytesRead)
+        assertEquals(true, report.hasMbrSignature)
+        assertEquals(true, report.hasGptSignature)
+        assertTrue(report.sha256?.matches(Regex("[0-9a-f]{64}")) == true)
+        assertFalse(report.requiresReconnect)
+        assertEquals(1, transport.closeCount)
+    }
+
+    @Test
+    fun `partition header inspection rejects truncated transport data and requires reconnect`() = runTest {
+        val transport = RecordingTransport(
+            readLbaPayload = ByteArray(RockchipPartitionHeaderInspector.EXPECTED_BYTES - 1),
+        )
+        val client = AndroidRockchipReadOnlyMetadataClient(
+            opener = RockchipReadOnlyTransportOpener { transport },
+            transportMethod = RockchipUsbIoMethod.USB_REQUEST,
+        )
+
+        val report = client.inspectPartitionHeaders(testDevice())
+
+        assertFalse(report.succeeded)
+        assertEquals(0, report.bytesRead)
+        assertNull(report.sha256)
+        assertNull(report.hasMbrSignature)
+        assertNull(report.hasGptSignature)
+        assertTrue(report.requiresReconnect)
+        assertEquals(1, transport.closeCount)
+    }
+
     private fun testDevice(): UsbDeviceDescriptor = UsbDeviceDescriptor(
         vendorId = 0x2207,
         productId = 0x320B,
@@ -62,8 +117,10 @@ class AndroidRockchipReadOnlyMetadataClientTest {
 
     private class RecordingTransport(
         private val failOpcode: Int? = null,
+        private val readLbaPayload: ByteArray? = null,
     ) : RockchipReadOnlyTransport {
         val opcodes = mutableListOf<Int>()
+        val responseLengthRanges = mutableListOf<IntRange>()
         var closeCount = 0
 
         override suspend fun exchange(
@@ -73,6 +130,7 @@ class AndroidRockchipReadOnlyMetadataClientTest {
         ): RockchipRawExchange {
             val opcode = command[15].toInt() and 0xFF
             opcodes += opcode
+            responseLengthRanges += responseLengthRange
             if (opcode == failOpcode) {
                 throw RockchipUsbTransportException(
                     stage = RockchipTransportStage.DATA_READ,
@@ -82,7 +140,11 @@ class AndroidRockchipReadOnlyMetadataClientTest {
             }
 
             val tag = ByteBuffer.wrap(command).order(ByteOrder.LITTLE_ENDIAN).getInt(4)
-            val data = ByteArray(responseLengthRange.first)
+            val data = if (opcode == 0x14 && readLbaPayload != null) {
+                readLbaPayload.copyOf()
+            } else {
+                ByteArray(responseLengthRange.first)
+            }
             return RockchipRawExchange(
                 data = data,
                 statusBytes = successfulCsw(tag),
