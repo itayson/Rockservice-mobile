@@ -36,9 +36,7 @@ class FirmwareLabAnalyzer internal constructor(
             analyzeFirmware = firmwareAnalyzer::analyze,
             parseSparse = sparseParser::parse,
             parseBoot = bootParser::parse,
-            parseSuper = { source, copy ->
-                superParser.parse(source, metadataCopy = copy)
-            },
+            parseSuper = { source, copy -> superParser.parse(source, metadataCopy = copy) },
             parseSparseSuper = sparseSuperParser::parseIfPresent,
             inspectRawFilesystem = rawFilesystemInspector::inspect,
         ),
@@ -85,11 +83,15 @@ class FirmwareLabAnalyzer internal constructor(
             }
 
             FirmwareFormat.UNKNOWN -> {
-                val inspection = openStream().use(parserOperations.inspectRawFilesystem)
-                if (inspection.type == RawFilesystemType.UNKNOWN) {
+                if (baseAnalysis.bytesRead < MINIMUM_RAW_FILESYSTEM_INSPECTION_BYTES) {
                     sections += unsupportedSection()
                 } else {
-                    sections += FirmwareLabReportSections.rawFilesystem(inspection)
+                    val inspection = openStream().use(parserOperations.inspectRawFilesystem)
+                    if (inspection.type == RawFilesystemType.UNKNOWN) {
+                        sections += unsupportedSection()
+                    } else {
+                        sections += FirmwareLabReportSections.rawFilesystem(inspection)
+                    }
                 }
             }
 
@@ -141,5 +143,6 @@ class FirmwareLabAnalyzer internal constructor(
 
     private companion object {
         const val DEFAULT_MAXIMUM_LISTED_ENTRIES = 200
+        const val MINIMUM_RAW_FILESYSTEM_INSPECTION_BYTES = 2048L
     }
 }
