@@ -107,7 +107,7 @@ class DiagnosticEventRecorder(
 
     private fun String.sanitizedText(maxLength: Int, fallback: String): String =
         trim()
-            .replace(Regex("[\\r\\n\\t]+"), " ")
+            .replace(Regex("\\s+"), " ")
             .take(maxLength)
             .ifBlank { fallback }
 
@@ -127,6 +127,7 @@ class DiagnosticEventRecorder(
         const val DEFAULT_METADATA_VALUE = "-"
         const val REDACTED_VALUE = "[redacted]"
         val SENSITIVE_KEY_FRAGMENTS = setOf(
+            "apikey",
             "authorization",
             "cookie",
             "credential",
@@ -134,6 +135,7 @@ class DiagnosticEventRecorder(
             "privatekey",
             "secret",
             "serial",
+            "sessionid",
             "token",
             "transportid",
         )
