@@ -1,5 +1,6 @@
 package org.rockservice.mobile
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -17,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -35,6 +37,7 @@ class FirmwareLabActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         firmwareLabViewModel = ViewModelProvider(this)[FirmwareLabViewModel::class.java]
+        val initialSourceUriString = intent.getStringExtra(EXTRA_INITIAL_SOURCE_URI)
         AppDiagnostics.recorder.record(
             severity = DiagnosticSeverity.INFO,
             component = "app",
@@ -45,8 +48,22 @@ class FirmwareLabActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val state by firmwareLabViewModel.state.collectAsState()
-                var selectedFirmwareUriString by rememberSaveable { mutableStateOf<String?>(null) }
+                var selectedFirmwareUriString by rememberSaveable {
+                    mutableStateOf(initialSourceUriString)
+                }
                 val resolver = applicationContext.contentResolver
+
+                LaunchedEffect(initialSourceUriString, selectedFirmwareUriString, state.analysis) {
+                    val initialUri = initialSourceUriString?.let(Uri::parse)
+                    if (
+                        initialUri != null &&
+                        selectedFirmwareUriString == initialSourceUriString &&
+                        state.analysis is FirmwareLabAnalysisState.Idle
+                    ) {
+                        firmwareLabViewModel.analyze(resolver, initialUri)
+                    }
+                }
+
                 val selectDocument = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri ->
@@ -157,5 +174,14 @@ class FirmwareLabActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        private const val EXTRA_INITIAL_SOURCE_URI = "org.rockservice.mobile.extra.INITIAL_SOURCE_URI"
+
+        fun createIntent(context: Context, sourceUri: Uri): Intent =
+            Intent(context, FirmwareLabActivity::class.java)
+                .putExtra(EXTRA_INITIAL_SOURCE_URI, sourceUri.toString())
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
 }
