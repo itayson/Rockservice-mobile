@@ -201,13 +201,21 @@ object AdbProtocolCodec {
             command = AdbCommand.OPEN,
             arg0 = localId,
             arg1 = 0,
-            payload = nullTerminatedUtf8(service, "servico ADB"),
+            payload = nullTerminatedUtf8(
+                value = service,
+                label = "servico ADB",
+                maximumTotalBytes = MAXIMUM_PAYLOAD_BYTES,
+            ),
         )
     }
 
     /** Creates an AUTH response carrying a signature of the device token. */
     fun authSignature(signature: ByteArray): AdbMessage {
         require(signature.isNotEmpty()) { "Assinatura AUTH ADB nao pode ser vazia." }
+        require(signature.size <= MAXIMUM_HANDSHAKE_PAYLOAD_BYTES) {
+            "Assinatura AUTH ADB possui ${signature.size} bytes; limite de handshake: " +
+                "$MAXIMUM_HANDSHAKE_PAYLOAD_BYTES."
+        }
         return AdbMessage(
             command = AdbCommand.AUTH,
             arg0 = AdbAuthType.SIGNATURE.wireValue,
@@ -221,7 +229,11 @@ object AdbProtocolCodec {
         command = AdbCommand.AUTH,
         arg0 = AdbAuthType.RSA_PUBLIC_KEY.wireValue,
         arg1 = 0,
-        payload = nullTerminatedUtf8(publicKeyRecord, "chave publica AUTH ADB"),
+        payload = nullTerminatedUtf8(
+            value = publicKeyRecord,
+            label = "chave publica AUTH ADB",
+            maximumTotalBytes = MAXIMUM_HANDSHAKE_PAYLOAD_BYTES,
+        ),
     )
 
     /** Computes the legacy ADB additive checksum over unsigned payload bytes. */
@@ -242,11 +254,16 @@ object AdbProtocolCodec {
         return encoded
     }
 
-    private fun nullTerminatedUtf8(value: String, label: String): ByteArray {
+    private fun nullTerminatedUtf8(
+        value: String,
+        label: String,
+        maximumTotalBytes: Int,
+    ): ByteArray {
+        require(maximumTotalBytes > 0) { "Limite de string ADB terminada em NUL deve ser positivo." }
         val encoded = utf8Payload(
             value = value,
             label = label,
-            maximumBytes = MAXIMUM_PAYLOAD_BYTES - 1,
+            maximumBytes = maximumTotalBytes - 1,
         )
         return encoded + byteArrayOf(0)
     }
