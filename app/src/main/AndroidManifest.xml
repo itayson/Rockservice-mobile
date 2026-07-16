@@ -6,6 +6,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.RockService"
         android:usesCleartextTraffic="false">
+        <activity android:name=".LocalBackupVerificationActivity" android:exported="false" />
         <activity
             android:name=".RockchipBackupActivity"
             android:exported="false" />
