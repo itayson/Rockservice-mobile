@@ -58,16 +58,12 @@ class FirmwareLabActivity : ComponentActivity() {
                 val exportReport = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.CreateDocument("text/plain"),
                 ) { uri ->
-                    uri?.let { destinationUri ->
-                        firmwareLabViewModel.exportReport(resolver, destinationUri)
-                    }
+                    uri?.let { destinationUri -> firmwareLabViewModel.exportReport(resolver, destinationUri) }
                 }
                 val expandSparse = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
                 ) { uri ->
-                    uri?.let { destinationUri ->
-                        firmwareLabViewModel.expandSparse(resolver, destinationUri)
-                    }
+                    uri?.let { destinationUri -> firmwareLabViewModel.expandSparse(resolver, destinationUri) }
                 }
 
                 Scaffold(
@@ -89,21 +85,13 @@ class FirmwareLabActivity : ComponentActivity() {
                         item {
                             FirmwareLabPanel(
                                 state = state,
-                                onSelectFile = {
-                                    selectDocument.launch(arrayOf("*/*"))
-                                },
-                                onExportReport = { suggestedName ->
-                                    exportReport.launch(suggestedName)
-                                },
-                                onExpandSparse = { suggestedName ->
-                                    expandSparse.launch(suggestedName)
-                                },
+                                onSelectFile = { selectDocument.launch(arrayOf("*/*")) },
+                                onExportReport = { suggestedName -> exportReport.launch(suggestedName) },
+                                onExpandSparse = { suggestedName -> expandSparse.launch(suggestedName) },
                                 onOpenBootExtraction = {
                                     val report = (state.analysis as? FirmwareLabAnalysisState.Ready)?.report
                                     val sourceUri = selectedFirmwareUriString?.let(Uri::parse)
-                                    if (
-                                        report != null &&
-                                        sourceUri != null &&
+                                    if (report != null && sourceUri != null &&
                                         report.detectedFormat == FirmwareFormat.ANDROID_BOOT_IMAGE
                                     ) {
                                         startActivity(
@@ -119,9 +107,7 @@ class FirmwareLabActivity : ComponentActivity() {
                                 onOpenSuperExtraction = {
                                     val report = (state.analysis as? FirmwareLabAnalysisState.Ready)?.report
                                     val sourceUri = selectedFirmwareUriString?.let(Uri::parse)
-                                    if (
-                                        report != null &&
-                                        sourceUri != null &&
+                                    if (report != null && sourceUri != null &&
                                         report.detectedFormat == FirmwareFormat.ANDROID_SUPER_RAW
                                     ) {
                                         startActivity(
@@ -140,14 +126,20 @@ class FirmwareLabActivity : ComponentActivity() {
                             Button(
                                 onClick = {
                                     startActivity(
-                                        Intent(
-                                            this@FirmwareLabActivity,
-                                            HardwareValidationActivity::class.java,
-                                        ),
+                                        Intent(this@FirmwareLabActivity, HardwareValidationActivity::class.java),
                                     )
                                 },
                             ) {
                                 Text("Validar hardware Rockchip por OTG")
+                            }
+                        }
+                        item {
+                            Button(
+                                onClick = {
+                                    startActivity(Intent(this@FirmwareLabActivity, AdbProbeActivity::class.java))
+                                },
+                            ) {
+                                Text("Validar conexao ADB por USB")
                             }
                         }
                         item {
@@ -163,10 +155,7 @@ class FirmwareLabActivity : ComponentActivity() {
                             Button(
                                 onClick = {
                                     startActivity(
-                                        Intent(
-                                            this@FirmwareLabActivity,
-                                            DiagnosticsLogActivity::class.java,
-                                        ),
+                                        Intent(this@FirmwareLabActivity, DiagnosticsLogActivity::class.java),
                                     )
                                 },
                             ) {
