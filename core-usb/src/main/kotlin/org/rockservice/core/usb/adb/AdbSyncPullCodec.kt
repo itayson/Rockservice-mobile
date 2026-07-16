@@ -3,22 +3,26 @@ package org.rockservice.core.usb.adb
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.CharBuffer
+import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 
 /** One validated response frame from the read-only ADB Sync pull protocol. */
 sealed interface AdbSyncPullResponse {
-    /** One DATA payload. Equality is based on byte content. */
+    /** One DATA payload. Equality is based on byte content and exposed bytes are defensive copies. */
     class Data(
         bytes: ByteArray,
     ) : AdbSyncPullResponse {
-        val bytes: ByteArray = bytes.copyOf()
+        private val payload = bytes.copyOf()
+
+        val bytes: ByteArray
+            get() = payload.copyOf()
 
         override fun equals(other: Any?): Boolean =
-            other is Data && bytes.contentEquals(other.bytes)
+            other is Data && payload.contentEquals(other.payload)
 
-        override fun hashCode(): Int = bytes.contentHashCode()
+        override fun hashCode(): Int = payload.contentHashCode()
 
-        override fun toString(): String = "Data(${bytes.size} bytes)"
+        override fun toString(): String = "Data(${payload.size} bytes)"
     }
 
     /** Successful end of one RECV transfer. */
@@ -43,7 +47,7 @@ object AdbSyncPullCodec {
 
     /** Encodes `RECV <path>` using the legacy Sync request shared by old and current peers. */
     fun encodeReceiveRequest(remotePath: String): ByteArray {
-        require(remotePath.isNotBlank()) { "Caminho remoto ADB Sync nao pode ser vazio." }
+        require(remotePath.isNotEmpty()) { "Caminho remoto ADB Sync nao pode ser vazio." }
         require('\u0000' !in remotePath) { "Caminho remoto ADB Sync nao pode conter NUL." }
         val pathBytes = strictUtf8(remotePath)
         require(pathBytes.size <= MAXIMUM_PATH_BYTES) {
@@ -77,7 +81,11 @@ object AdbSyncPullCodec {
         val encoder = Charsets.UTF_8.newEncoder()
             .onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT)
-        val encoded = encoder.encode(CharBuffer.wrap(value))
+        val encoded = try {
+            encoder.encode(CharBuffer.wrap(value))
+        } catch (error: CharacterCodingException) {
+            throw IllegalArgumentException("Caminho remoto ADB Sync nao contem texto Unicode valido.", error)
+        }
         return ByteArray(encoded.remaining()).also(encoded::get)
     }
 }
