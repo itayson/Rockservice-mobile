@@ -43,7 +43,7 @@ data class AdbMessageHeader(
     val dataChecksum: Long,
 )
 
-/** Complete validated ADB transport message. */
+/** Complete validated ADB transport message with payload equality based on byte content. */
 data class AdbMessage(
     val command: AdbCommand,
     val arg0: Long,
@@ -56,6 +56,23 @@ data class AdbMessage(
         require(payload.size <= AdbProtocolCodec.MAXIMUM_PAYLOAD_BYTES) {
             "Payload ADB possui ${payload.size} bytes; limite: ${AdbProtocolCodec.MAXIMUM_PAYLOAD_BYTES}."
         }
+    }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is AdbMessage) return false
+        return command == other.command &&
+            arg0 == other.arg0 &&
+            arg1 == other.arg1 &&
+            payload.contentEquals(other.payload)
+    }
+
+    override fun hashCode(): Int {
+        var result = command.hashCode()
+        result = 31 * result + arg0.hashCode()
+        result = 31 * result + arg1.hashCode()
+        result = 31 * result + payload.contentHashCode()
+        return result
     }
 }
 
