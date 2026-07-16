@@ -48,8 +48,8 @@ internal object RockchipPartitionHeaderInspector {
         }
 
         val hasMbrSignature =
-            data[MBR_SIGNATURE_OFFSET].toInt() and 0xFF == 0x55 &&
-                data[MBR_SIGNATURE_OFFSET + 1].toInt() and 0xFF == 0xAA
+            (data[MBR_SIGNATURE_OFFSET].toInt() and 0xFF) == 0x55 &&
+                (data[MBR_SIGNATURE_OFFSET + 1].toInt() and 0xFF) == 0xAA
         val hasGptSignature = GPT_SIGNATURE.indices.all { index ->
             data[GPT_SIGNATURE_OFFSET + index] == GPT_SIGNATURE[index]
         }
