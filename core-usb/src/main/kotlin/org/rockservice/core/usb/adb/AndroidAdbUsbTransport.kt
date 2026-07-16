@@ -43,45 +43,56 @@ internal class AndroidAdbUsbTransport(
     private val io: AdbUsbIo,
 ) : AdbMessageTransport {
     private val closed = AtomicBoolean(false)
-    private val operationMutex = Mutex()
+    private val sendMutex = Mutex()
+    private val receiveMutex = Mutex()
+    private val closeMutex = Mutex()
 
-    override suspend fun send(message: AdbMessage, timeoutMillis: Long) = withTimeout(timeoutMillis) {
-        operationMutex.withLock {
-            check(!closed.get()) { "ADB USB transport is closed." }
-            require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
-            currentCoroutineContext().ensureActive()
-            val frame = AdbProtocolCodec.encode(message)
-            io.writeExactly(frame, ioTimeout(timeoutMillis))
-            currentCoroutineContext().ensureActive()
+    override suspend fun send(message: AdbMessage, timeoutMillis: Long) {
+        require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
+        withTimeout(timeoutMillis) {
+            sendMutex.withLock {
+                check(!closed.get()) { "ADB USB transport is closed." }
+                currentCoroutineContext().ensureActive()
+                val frame = AdbProtocolCodec.encode(message)
+                io.writeExactly(frame, ioTimeout(timeoutMillis))
+                currentCoroutineContext().ensureActive()
+            }
         }
     }
 
     override suspend fun receive(
         timeoutMillis: Long,
         requireChecksum: Boolean,
-    ): AdbMessage = withTimeout(timeoutMillis) {
-        operationMutex.withLock {
-            check(!closed.get()) { "ADB USB transport is closed." }
-            require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
-            val ioTimeout = ioTimeout(timeoutMillis)
-            currentCoroutineContext().ensureActive()
+    ): AdbMessage {
+        require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
+        return withTimeout(timeoutMillis) {
+            receiveMutex.withLock {
+                check(!closed.get()) { "ADB USB transport is closed." }
+                val ioTimeout = ioTimeout(timeoutMillis)
+                currentCoroutineContext().ensureActive()
 
-            val headerBytes = io.readExactly(AdbProtocolCodec.HEADER_SIZE_BYTES, ioTimeout)
-            val header = AdbProtocolCodec.decodeHeader(headerBytes)
-            currentCoroutineContext().ensureActive()
-            val payload = if (header.dataLength == 0) {
-                ByteArray(0)
-            } else {
-                io.readExactly(header.dataLength, ioTimeout)
+                val headerBytes = io.readExactly(AdbProtocolCodec.HEADER_SIZE_BYTES, ioTimeout)
+                val header = AdbProtocolCodec.decodeHeader(headerBytes)
+                currentCoroutineContext().ensureActive()
+                val payload = if (header.dataLength == 0) {
+                    ByteArray(0)
+                } else {
+                    io.readExactly(header.dataLength, ioTimeout)
+                }
+                currentCoroutineContext().ensureActive()
+                AdbProtocolCodec.decodePayload(header, payload, requireChecksum)
             }
-            currentCoroutineContext().ensureActive()
-            AdbProtocolCodec.decodePayload(header, payload, requireChecksum)
         }
     }
 
     override suspend fun close() {
-        operationMutex.withLock {
-            if (closed.compareAndSet(false, true)) io.close()
+        closeMutex.withLock {
+            if (!closed.compareAndSet(false, true)) return@withLock
+            sendMutex.withLock {
+                receiveMutex.withLock {
+                    io.close()
+                }
+            }
         }
     }
 
