@@ -71,16 +71,32 @@ internal class HardwareValidationViewModel : ViewModel() {
         mutableState.value = mutableState.value.copy(otgAdapter = value.take(MAXIMUM_NOTE_LENGTH))
     }
 
+    fun invalidateActiveTarget() {
+        validationJob?.cancel()
+        metadataProbeJob?.cancel()
+        validationGeneration += 1L
+        metadataProbeGeneration += 1L
+        mutableState.value = mutableState.value.copy(
+            runState = HardwareValidationRunState.Idle,
+            metadataProbeState = RockchipMetadataProbeState.Idle,
+            exportMessage = null,
+        )
+    }
+
     fun recordAttachmentEvent(kind: UsbAttachmentEventKind) {
         val event = UsbHardwareValidationEvent(
             kind = kind,
             timestampEpochMillis = System.currentTimeMillis(),
         )
+        validationJob?.cancel()
         metadataProbeJob?.cancel()
+        validationGeneration += 1L
         metadataProbeGeneration += 1L
         mutableState.value = mutableState.value.copy(
             events = (mutableState.value.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
+            runState = HardwareValidationRunState.Idle,
             metadataProbeState = RockchipMetadataProbeState.Idle,
+            exportMessage = null,
         )
     }
 
