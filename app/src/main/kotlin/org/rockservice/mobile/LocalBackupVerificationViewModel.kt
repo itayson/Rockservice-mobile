@@ -7,17 +7,23 @@ import androidx.lifecycle.viewModelScope
 import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.rockservice.core.usb.rockchip.RockchipBackupManifest
+import org.rockservice.core.usb.rockchip.RockchipBackupManifestCodec
 import org.rockservice.core.usb.rockchip.RockchipBackupVerifier
 
 data class LocalBackupVerificationUiState(
     val running: Boolean = false,
     val resultMessage: String? = null,
+    val manifestLoading: Boolean = false,
+    val manifestMessage: String? = null,
+    val loadedManifest: RockchipBackupManifest? = null,
+    val manifestRevision: Long = 0L,
 )
 
 internal data class LocalBackupVerificationInput(
@@ -61,10 +67,76 @@ internal data class LocalBackupVerificationInput(
 
 class LocalBackupVerificationViewModel : ViewModel() {
     private val _state = MutableStateFlow(LocalBackupVerificationUiState())
+    private var manifestLoadJob: Job? = null
+    private var manifestRequestGeneration = 0L
+
     val state: StateFlow<LocalBackupVerificationUiState> = _state.asStateFlow()
 
     fun clearResult() {
         _state.value = _state.value.copy(resultMessage = null)
+    }
+
+    fun markMetadataEdited() {
+        _state.value = _state.value.copy(
+            resultMessage = null,
+            manifestMessage = null,
+            loadedManifest = null,
+        )
+    }
+
+    fun loadManifest(resolver: ContentResolver, uri: Uri) {
+        if (_state.value.running) return
+
+        manifestLoadJob?.cancel()
+        val requestGeneration = ++manifestRequestGeneration
+        _state.value = _state.value.copy(
+            manifestLoading = true,
+            manifestMessage = null,
+            resultMessage = null,
+        )
+
+        manifestLoadJob = viewModelScope.launch {
+            val result = try {
+                val manifest = withContext(Dispatchers.IO) {
+                    val source = resolver.openInputStream(uri)
+                        ?: throw IOException("O manifesto selecionado não pode ser aberto.")
+                    source.use { input -> RockchipBackupManifestCodec.decode(input) }
+                }
+                ManifestLoadResult.Success(manifest)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: SecurityException) {
+                ManifestLoadResult.Failure(
+                    "O acesso ao manifesto foi negado. Selecione o arquivo novamente e tente outra vez.",
+                )
+            } catch (_: IOException) {
+                ManifestLoadResult.Failure(
+                    "Não foi possível ler o manifesto. Confirme que o arquivo ainda está disponível.",
+                )
+            } catch (_: IllegalArgumentException) {
+                ManifestLoadResult.Failure(
+                    "O arquivo selecionado não é um manifesto RockService válido ou está corrompido.",
+                )
+            }
+
+            if (requestGeneration != manifestRequestGeneration) return@launch
+            when (result) {
+                is ManifestLoadResult.Success -> {
+                    _state.value = _state.value.copy(
+                        manifestLoading = false,
+                        manifestMessage = "Manifesto carregado. Os metadados foram preenchidos automaticamente.",
+                        loadedManifest = result.manifest,
+                        manifestRevision = _state.value.manifestRevision + 1L,
+                    )
+                }
+                is ManifestLoadResult.Failure -> {
+                    _state.value = _state.value.copy(
+                        manifestLoading = false,
+                        manifestMessage = result.message,
+                    )
+                }
+            }
+        }
     }
 
     fun verify(
@@ -74,14 +146,15 @@ class LocalBackupVerificationViewModel : ViewModel() {
         sectorCountText: String,
         sha256Text: String,
     ) {
+        if (_state.value.running || _state.value.manifestLoading) return
+
         val input = LocalBackupVerificationInput.parse(startSectorText, sectorCountText, sha256Text)
             .getOrElse { error ->
-                _state.value = LocalBackupVerificationUiState(resultMessage = error.message)
+                _state.value = _state.value.copy(resultMessage = error.message)
                 return
             }
 
-        if (_state.value.running) return
-        _state.value = LocalBackupVerificationUiState(running = true)
+        _state.value = _state.value.copy(running = true, resultMessage = null)
         viewModelScope.launch {
             val message = try {
                 withContext(Dispatchers.IO) {
@@ -103,14 +176,25 @@ class LocalBackupVerificationViewModel : ViewModel() {
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
-            } catch (error: IOException) {
-                error.message ?: "Falha de leitura ao verificar o arquivo local."
-            } catch (error: SecurityException) {
-                "O aplicativo não tem permissão para ler o arquivo selecionado."
-            } catch (error: IllegalArgumentException) {
-                error.message ?: "Os metadados informados são inválidos."
+            } catch (_: IOException) {
+                "Não foi possível ler o arquivo. Confirme que ele ainda está disponível e tente novamente."
+            } catch (_: SecurityException) {
+                "O acesso ao arquivo foi negado. Selecione o arquivo novamente e tente outra vez."
+            } catch (_: IllegalArgumentException) {
+                "Os metadados são inválidos. Revise o LBA, a quantidade de setores e o SHA-256."
             }
-            _state.value = LocalBackupVerificationUiState(resultMessage = message)
+            _state.value = _state.value.copy(running = false, resultMessage = message)
         }
+    }
+
+    override fun onCleared() {
+        manifestLoadJob?.cancel()
+        manifestRequestGeneration += 1L
+        super.onCleared()
+    }
+
+    private sealed interface ManifestLoadResult {
+        data class Success(val manifest: RockchipBackupManifest) : ManifestLoadResult
+        data class Failure(val message: String) : ManifestLoadResult
     }
 }
