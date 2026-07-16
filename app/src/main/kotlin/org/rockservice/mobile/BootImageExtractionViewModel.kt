@@ -7,12 +7,16 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.rockservice.core.common.diagnostics.DiagnosticEventRecorder
 import org.rockservice.core.common.diagnostics.DiagnosticSeverity
 import org.rockservice.feature.firmware.AndroidBootImageParser
@@ -66,6 +70,7 @@ internal class BootImageExtractionViewModel(
     private val extractor = AndroidBootSectionExtractor()
     private val mutableState = MutableStateFlow(BootImageExtractionScreenState())
     private val operationGeneration = AtomicLong(0L)
+    private val extractionMutex = Mutex()
     private var metadataJob: Job? = null
     private var extractionJob: Job? = null
 
@@ -102,9 +107,7 @@ internal class BootImageExtractionViewModel(
             return
         }
 
-        mutableState.value = mutableState.value.copy(
-            extraction = BootSectionExtractionState.Extracting(sectionType),
-        )
+        publishExtraction(generation, BootSectionExtractionState.Extracting(sectionType))
         diagnosticsRecorder.record(
             severity = DiagnosticSeverity.INFO,
             component = "firmware",
@@ -114,75 +117,105 @@ internal class BootImageExtractionViewModel(
         )
 
         extractionJob = viewModelScope.launch(Dispatchers.IO) {
-            var destinationOpened = false
-            try {
-                val metadata = contentResolver.openInputStream(sourceUri)?.buffered()?.use(parser::parse)
-                    ?: throw IOException("O provedor de documentos nao abriu a Boot Image de origem.")
+            extractionMutex.withLock {
+                coroutineContext.ensureActive()
+                if (operationGeneration.get() != generation) return@withLock
 
-                val matchingSections = metadata.sections.filter { section ->
-                    section.type == sectionType && section.sizeBytes > 0L
-                }
-                require(matchingSections.size == 1) {
-                    "A seção $sectionType nao esta mais disponivel de forma inequívoca na Boot Image atual."
-                }
+                // CreateDocument may already have created or truncated the destination before this method runs.
+                // Until a successful completion proves otherwise, treat it as potentially partial/invalid.
+                var destinationMayContainPartialData = true
+                try {
+                    val metadata = contentResolver.openInputStream(sourceUri)?.buffered()?.use(parser::parse)
+                        ?: throw IOException("O provedor de documentos nao abriu a Boot Image de origem.")
+                    coroutineContext.ensureActive()
 
-                val source = contentResolver.openInputStream(sourceUri)?.buffered()
-                    ?: throw IOException("O provedor de documentos nao reabriu a Boot Image de origem.")
-                val extractionReport = source.use { input ->
-                    val output = contentResolver.openOutputStream(destinationUri, "w")
-                        ?: throw IOException("O destino selecionado nao pode ser aberto para escrita.")
-                    destinationOpened = true
-                    output.buffered().use { destination ->
-                        extractor.extract(
-                            source = input,
-                            metadata = metadata,
-                            expectedSourceSha256 = expectedSourceSha256,
-                            sectionType = sectionType,
-                            destination = destination,
+                    val matchingSections = metadata.sections.filter { section ->
+                        section.type == sectionType && section.sizeBytes > 0L
+                    }
+                    require(matchingSections.size == 1) {
+                        "A seção $sectionType nao esta mais disponivel de forma inequívoca na Boot Image atual."
+                    }
+
+                    val source = contentResolver.openInputStream(sourceUri)?.buffered()
+                        ?: throw IOException("O provedor de documentos nao reabriu a Boot Image de origem.")
+                    val extractionReport = source.use { input ->
+                        val output = contentResolver.openOutputStream(destinationUri, "w")
+                            ?: throw IOException("O destino selecionado nao pode ser aberto para escrita.")
+                        output.buffered().use { destination ->
+                            extractor.extract(
+                                source = input,
+                                metadata = metadata,
+                                expectedSourceSha256 = expectedSourceSha256,
+                                sectionType = sectionType,
+                                destination = destination,
+                                checkpoint = { coroutineContext.ensureActive() },
+                            )
+                        }
+                    }
+                    coroutineContext.ensureActive()
+
+                    destinationMayContainPartialData = false
+                    publishExtraction(
+                        generation = generation,
+                        state = BootSectionExtractionState.Ready(extractionReport),
+                    )
+                    if (operationGeneration.get() == generation) {
+                        diagnosticsRecorder.record(
+                            severity = DiagnosticSeverity.INFO,
+                            component = "firmware",
+                            action = "boot.extract.completed",
+                            message = "Extração controlada de seção Boot Image concluída.",
+                            metadata = mapOf(
+                                "section" to sectionType.name,
+                                "extractedBytes" to extractionReport.extractedBytes.toString(),
+                            ),
                         )
                     }
-                }
-
-                publishExtraction(
-                    generation = generation,
-                    state = BootSectionExtractionState.Ready(extractionReport),
-                )
-                if (operationGeneration.get() == generation) {
+                } catch (cancelled: CancellationException) {
                     diagnosticsRecorder.record(
-                        severity = DiagnosticSeverity.INFO,
+                        severity = DiagnosticSeverity.DEBUG,
                         component = "firmware",
-                        action = "boot.extract.completed",
-                        message = "Extração controlada de seção Boot Image concluída.",
+                        action = "boot.extract.cancelled",
+                        message = "Extração Boot Image anterior cancelada por uma operação mais nova.",
                         metadata = mapOf(
                             "section" to sectionType.name,
-                            "extractedBytes" to extractionReport.extractedBytes.toString(),
+                            "destinationMayContainPartialData" to destinationMayContainPartialData.toString(),
                         ),
                     )
+                    throw cancelled
+                } catch (error: SecurityException) {
+                    publishFailure(
+                        generation,
+                        sectionType,
+                        destinationMayContainPartialData,
+                        error.javaClass.simpleName,
+                        "O Android negou acesso à origem ou ao destino selecionado.",
+                    )
+                } catch (error: IOException) {
+                    publishFailure(
+                        generation,
+                        sectionType,
+                        destinationMayContainPartialData,
+                        error.javaClass.simpleName,
+                        error.message ?: "Falha de entrada/saida durante a extração Boot Image.",
+                    )
+                } catch (error: IllegalArgumentException) {
+                    publishFailure(
+                        generation,
+                        sectionType,
+                        destinationMayContainPartialData,
+                        error.javaClass.simpleName,
+                        error.message ?: "A Boot Image mudou, esta truncada ou possui layout invalido.",
+                    )
+                } catch (error: Exception) {
+                    publishFailure(
+                        generation,
+                        sectionType,
+                        destinationMayContainPartialData,
+                        error.javaClass.simpleName,
+                        "Falha inesperada na extração: ${error.message ?: error.javaClass.simpleName}.",
+                    )
                 }
-            } catch (cancelled: CancellationException) {
-                diagnosticsRecorder.record(
-                    severity = DiagnosticSeverity.DEBUG,
-                    component = "firmware",
-                    action = "boot.extract.cancelled",
-                    message = "Extração Boot Image anterior cancelada por uma operação mais nova.",
-                    metadata = mapOf(
-                        "section" to sectionType.name,
-                        "destinationOpened" to destinationOpened.toString(),
-                    ),
-                )
-                throw cancelled
-            } catch (error: SecurityException) {
-                publishFailure(generation, sectionType, destinationOpened, error.javaClass.simpleName,
-                    "O Android negou acesso à origem ou ao destino selecionado.")
-            } catch (error: IOException) {
-                publishFailure(generation, sectionType, destinationOpened, error.javaClass.simpleName,
-                    error.message ?: "Falha de entrada/saida durante a extração Boot Image.")
-            } catch (error: IllegalArgumentException) {
-                publishFailure(generation, sectionType, destinationOpened, error.javaClass.simpleName,
-                    error.message ?: "A Boot Image mudou, esta truncada ou possui layout invalido.")
-            } catch (error: Exception) {
-                publishFailure(generation, sectionType, destinationOpened, error.javaClass.simpleName,
-                    "Falha inesperada na extração: ${error.message ?: error.javaClass.simpleName}.")
             }
         }
     }
@@ -213,7 +246,9 @@ internal class BootImageExtractionViewModel(
             } catch (error: IllegalArgumentException) {
                 publishMetadataError(error.message ?: "A Boot Image possui layout invalido ou não suportado.")
             } catch (error: Exception) {
-                publishMetadataError("Falha inesperada ao revalidar a Boot Image: ${error.message ?: error.javaClass.simpleName}.")
+                publishMetadataError(
+                    "Falha inesperada ao revalidar a Boot Image: ${error.message ?: error.javaClass.simpleName}.",
+                )
             }
         }
     }
@@ -234,7 +269,7 @@ internal class BootImageExtractionViewModel(
     private fun publishFailure(
         generation: Long,
         sectionType: AndroidBootSectionType,
-        destinationOpened: Boolean,
+        destinationMayContainPartialData: Boolean,
         errorType: String,
         message: String,
     ) {
@@ -243,7 +278,7 @@ internal class BootImageExtractionViewModel(
             state = BootSectionExtractionState.Error(
                 sectionType = sectionType,
                 message = message,
-                destinationMayContainPartialData = destinationOpened,
+                destinationMayContainPartialData = destinationMayContainPartialData,
             ),
         )
         if (operationGeneration.get() == generation) {
@@ -254,7 +289,7 @@ internal class BootImageExtractionViewModel(
                 message = "Extração controlada de seção Boot Image falhou.",
                 metadata = mapOf(
                     "section" to sectionType.name,
-                    "destinationMayContainPartialData" to destinationOpened.toString(),
+                    "destinationMayContainPartialData" to destinationMayContainPartialData.toString(),
                     "errorType" to errorType,
                 ),
             )
