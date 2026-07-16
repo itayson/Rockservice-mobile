@@ -205,7 +205,8 @@ class AdbHandshakeStateMachine(
     }
 
     private companion object {
-        const val DEFAULT_HOST_BANNER = "host::features=shell_v2,cmd;"
+        // Do not advertise optional ADB features until the corresponding services are implemented.
+        const val DEFAULT_HOST_BANNER = "host::"
         const val MINIMUM_SUPPORTED_PROTOCOL_VERSION = 0x01000000L
         const val UINT32_MAX = 0xFFFF_FFFFL
     }
