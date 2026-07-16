@@ -32,7 +32,7 @@ Entregue:
 
 Pendente:
 
-- integração do log estruturado com fluxos adicionais de firmware, ADB e operações críticas;
+- integração do log estruturado com fluxos adicionais de ADB e operações críticas;
 - casos de uso adicionais para futuros fluxos críticos;
 - banco local somente quando existir requisito explícito de persistência.
 
@@ -47,12 +47,13 @@ Entregue:
 - SHA-256;
 - limites para arquivos e headers truncados;
 - parser estrutural Android Sparse com validação de headers, chunks, limites e contabilidade de blocos;
+- expansão Android Sparse em streaming com `RAW`, `FILL`, `DONT_CARE`, CRC32, SHA-256 e limites defensivos;
+- fluxo Android explícito para selecionar o destino da expansão Sparse, bloquear origem=destino e sinalizar saída parcial em falhas;
 - parser estrutural Android Boot Image v0-v4 com validação de layout, alinhamentos, offsets e truncamento;
 - parser raw de metadata de partições dinâmicas Android `super`/liblp com validação de geometria, checksums, tabelas e referências cruzadas.
 
 Pendente:
 
-- expansão e extração segura de Android Sparse;
 - interpretação adicional e extração controlada de payloads de boot images;
 - tradução segura de `super.img` sparse para o parser raw;
 - mapeamento e extração controlada de partições lógicas;
@@ -138,4 +139,4 @@ API de plugins, USB/serial e documentação para fabricantes.
 
 ## Release
 
-A publicação automática permanece desativada. Assinatura, SBOM, provenance e gates de distribuição estão rastreados em `#20`.
+A infraestrutura de release assinado, SBOM, provenance e publicação protegida está implementada. A ativação operacional permanece bloqueada pelos gates externos rastreados em `#20`.
