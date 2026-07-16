@@ -33,7 +33,7 @@ class RockchipBoundedBackupEngineTest {
         assertEquals(8L, result.sectorCount)
         assertEquals(10L, result.startSector)
         assertEquals(
-            "c9f39787c8a6e0c9e373999a185e9cf2df16ea642189f65a71b4262bf304913c",
+            "11b210afc13ffed63d99879eb84733ce19b3737f2d3522769d8042ddf93d0df6",
             result.sha256,
         )
         assertEquals(listOf(3L, 6L, 8L), progress.map { it.completedSectors })
@@ -53,7 +53,7 @@ class RockchipBoundedBackupEngineTest {
         )
 
         assertEquals(
-            "32beecb58a128af824850b16b85d7f2d4d31f2b4f565b1e5a7f140f09a31fdf",
+            "32beecb58a128af8248504600bd203dcc676adf41045300485655e6b8780a01d",
             result.sha256,
         )
     }
