@@ -1,7 +1,6 @@
 package org.rockservice.core.usb.adb
 
 import java.security.MessageDigest
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -32,6 +31,12 @@ class AdbSyncPullProtocolException(
     cause: Throwable? = null,
 ) : IllegalStateException(message, cause)
 
+/** QUIT or stream close failed after the engine had already assumed ownership of the Sync stream. */
+class AdbSyncPullCleanupException(
+    message: String,
+    cause: Throwable,
+) : IllegalStateException(message, cause)
+
 /**
  * Streams one already-open `sync:` ADB service into a bounded caller sink.
  *
@@ -48,6 +53,10 @@ class AdbSyncPullEngine(
         validateTimeout(defaultTimeoutMillis)
     }
 
+    /**
+     * Pulls one remote path through an already-open ADB session stream and delivers bounded chunks.
+     * The supplied stream is consumed and closed by this call regardless of success or failure.
+     */
     suspend fun pull(
         stream: AdbSessionStream,
         remotePath: String,
@@ -76,6 +85,7 @@ class AdbSyncPullEngine(
         val digest = MessageDigest.getInstance("SHA-256")
         var deliveredBytes = 0L
         var completedSuccessfully = false
+        var primaryFailure: Throwable? = null
 
         try {
             return withTimeout(timeoutMillis) {
@@ -144,22 +154,66 @@ class AdbSyncPullEngine(
                 }
                 checkNotNull(result)
             }
-        } catch (cancelled: CancellationException) {
-            // Includes the total withTimeout deadline. Preserve cancellation semantics for callers.
-            throw cancelled
+        } catch (error: Throwable) {
+            primaryFailure = error
+            throw error
         } finally {
-            withContext(NonCancellable) {
-                if (completedSuccessfully) {
-                    runCatching {
-                        stream.write(
-                            AdbSyncPullCodec.encodeQuitRequest(),
-                            CLEANUP_TIMEOUT_MILLIS,
-                        )
-                    }
+            val cleanupFailure = withContext(NonCancellable) {
+                cleanupOwnedStream(
+                    stream = stream,
+                    completedSuccessfully = completedSuccessfully,
+                )
+            }
+            if (cleanupFailure != null) {
+                val primary = primaryFailure
+                if (primary != null) {
+                    primary.addSuppressed(cleanupFailure)
+                } else {
+                    throw cleanupFailure
                 }
-                runCatching { stream.close(CLEANUP_TIMEOUT_MILLIS) }
             }
         }
+    }
+
+    private suspend fun cleanupOwnedStream(
+        stream: AdbSyncPullStream,
+        completedSuccessfully: Boolean,
+    ): AdbSyncPullCleanupException? {
+        val failures = mutableListOf<Throwable>()
+        if (completedSuccessfully) {
+            try {
+                stream.write(
+                    AdbSyncPullCodec.encodeQuitRequest(),
+                    CLEANUP_TIMEOUT_MILLIS,
+                )
+            } catch (error: Throwable) {
+                failures += IllegalStateException(
+                    "Falha ao enviar QUIT para o servico ADB Sync apos DONE.",
+                    error,
+                )
+            }
+        }
+
+        try {
+            stream.close(CLEANUP_TIMEOUT_MILLIS)
+        } catch (error: Throwable) {
+            failures += IllegalStateException(
+                "Falha ao fechar o stream ADB usado pelo pull Sync.",
+                error,
+            )
+        }
+
+        if (failures.isEmpty()) return null
+        val cleanup = AdbSyncPullCleanupException(
+            message = if (completedSuccessfully) {
+                "ADB Sync concluiu o conteudo, mas o cleanup do stream falhou."
+            } else {
+                "ADB Sync falhou e o cleanup do stream tambem nao foi concluido."
+            },
+            cause = failures.first(),
+        )
+        failures.drop(1).forEach(cleanup::addSuppressed)
+        return cleanup
     }
 
     private fun protocolErrorFromPrematureClose(decoder: AdbSyncPullDecoder): AdbSyncPullProtocolException =
