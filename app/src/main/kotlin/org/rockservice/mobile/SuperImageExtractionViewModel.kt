@@ -136,7 +136,7 @@ internal class SuperImageExtractionViewModel(
                 coroutineContext.ensureActive()
                 if (operationGeneration.get() != generation) return@withLock
 
-                var destinationMayContainPartialData = true
+                var destinationMayContainPartialData = false
                 try {
                     val initialAnalysis = analyzeSource()
                     require(initialAnalysis.format == FirmwareFormat.ANDROID_SUPER_RAW) {
@@ -158,6 +158,7 @@ internal class SuperImageExtractionViewModel(
 
                     val output = contentResolver.openOutputStream(destinationUri, "w")
                         ?: throw IOException("O destino selecionado nao pode ser aberto para escrita.")
+                    destinationMayContainPartialData = true
                     val report = output.buffered().use { destination ->
                         exporter.export(
                             plan = plan,
