@@ -116,6 +116,24 @@ class FirmwareLabActivity : ComponentActivity() {
                                         )
                                     }
                                 },
+                                onOpenSuperExtraction = {
+                                    val report = (state.analysis as? FirmwareLabAnalysisState.Ready)?.report
+                                    val sourceUri = selectedFirmwareUriString?.let(Uri::parse)
+                                    if (
+                                        report != null &&
+                                        sourceUri != null &&
+                                        report.detectedFormat == FirmwareFormat.ANDROID_SUPER_RAW
+                                    ) {
+                                        startActivity(
+                                            SuperImageExtractionActivity.createIntent(
+                                                context = this@FirmwareLabActivity,
+                                                sourceUri = sourceUri,
+                                                expectedSourceSha256 = report.sha256,
+                                                displayName = report.displayName,
+                                            ),
+                                        )
+                                    }
+                                },
                             )
                         }
                         item {
