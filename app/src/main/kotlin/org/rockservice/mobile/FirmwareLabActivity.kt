@@ -21,6 +21,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
+import org.rockservice.core.common.diagnostics.DiagnosticSeverity
 
 /** Entry screen for selecting, analyzing and exporting reports for firmware image files. */
 class FirmwareLabActivity : ComponentActivity() {
@@ -29,6 +30,12 @@ class FirmwareLabActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         firmwareLabViewModel = ViewModelProvider(this)[FirmwareLabViewModel::class.java]
+        AppDiagnostics.recorder.record(
+            severity = DiagnosticSeverity.INFO,
+            component = "app",
+            action = "launcher.open",
+            message = "Tela inicial do laboratório de firmware aberta.",
+        )
 
         setContent {
             MaterialTheme {
@@ -97,6 +104,20 @@ class FirmwareLabActivity : ComponentActivity() {
                                 },
                             ) {
                                 Text("Abrir diagnostico de dispositivos")
+                            }
+                        }
+                        item {
+                            Button(
+                                onClick = {
+                                    startActivity(
+                                        Intent(
+                                            this@FirmwareLabActivity,
+                                            DiagnosticsLogActivity::class.java,
+                                        ),
+                                    )
+                                },
+                            ) {
+                                Text("Abrir log técnico sanitizado")
                             }
                         }
                     }
