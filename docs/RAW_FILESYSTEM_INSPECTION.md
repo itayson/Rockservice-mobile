@@ -26,7 +26,8 @@ A política é deliberadamente conservadora: uma imagem ext4 criada sem qualquer
 - `log_blocksize` é aceito entre `12` e `16` (`4 KiB` a `64 KiB`) para cobrir geometrias coerentes com diferentes tamanhos de página;
 - `log_blocks_per_seg` deve ser `9`;
 - `log_sectorsize` deve ser compatível com o bloco declarado;
-- `log_sectorsize + log_sectors_per_block` deve corresponder exatamente a `log_blocksize`.
+- `log_sectorsize + log_sectors_per_block` deve corresponder exatamente a `log_blocksize`;
+- `segs_per_sec` e `secs_per_zone` devem ser positivos.
 
 O formato F2FS usa bloco igual ao tamanho de página suportado pelo kernel que fará o mount; portanto, reconhecer estruturalmente uma imagem de `16 KiB` não significa que um kernel de página `4 KiB` conseguirá montá-la. Layouts incoerentes permanecem como `UNKNOWN`; o inspetor não tenta adaptar nem reinterpretar a imagem.
 
@@ -34,7 +35,8 @@ O formato F2FS usa bloco igual ao tamanho de página suportado pelo kernel que f
 
 - superblock inspecionado a partir do offset `1024`;
 - magic `0xE0F5E1E2`;
-- `blkszbits` validado antes de calcular o tamanho do bloco.
+- `blkszbits` validado entre `9` e `16`, mantendo um teto conservador de `64 KiB` para o detector genérico;
+- a compatibilidade real de montagem continua dependente do `PAGE_SHIFT` do kernel alvo.
 
 ### SquashFS
 
