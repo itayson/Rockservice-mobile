@@ -66,7 +66,7 @@ class AdbHandshakeStateMachine(
         require(state == AdbHandshakeState.Idle) {
             "Handshake ADB só pode ser iniciado a partir do estado Idle. Estado atual: $state."
         }
-        require(protocolVersion in MINIMUM_SUPPORTED_PROTOCOL_VERSION..UINT32_MAX) {
+        require(protocolVersion in MINIMUM_SUPPORTED_PROTOCOL_VERSION..AdbProtocolCodec.DEFAULT_PROTOCOL_VERSION) {
             "Versão local do protocolo ADB não suportada: 0x${protocolVersion.toString(16)}."
         }
 
