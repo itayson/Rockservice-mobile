@@ -50,6 +50,20 @@ data class RockchipBoundedLbaProbeReport(
     val requiresReconnect: Boolean = false,
 )
 
+/** Sanitized result of the fixed two-sector partition-header transport probe. */
+data class RockchipPartitionHeaderProbeReport(
+    val transportMethod: String,
+    val succeeded: Boolean,
+    val startSector: Long,
+    val sectorCount: Int,
+    val bytesRead: Int,
+    val sha256: String?,
+    val hasMbrSignature: Boolean?,
+    val hasGptSignature: Boolean?,
+    val detail: String,
+    val requiresReconnect: Boolean = false,
+)
+
 /** Metadata-only facade for the physically validated Android Rockchip USB transport. */
 class AndroidRockchipReadOnlyMetadataClient internal constructor(
     private val opener: RockchipReadOnlyTransportOpener,
@@ -167,6 +181,75 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
             report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
         } catch (error: IllegalStateException) {
             report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+        } finally {
+            closeSucceeded = closeSessionWithinDeadline(session)
+        }
+
+        return if (closeSucceeded) report else report.copy(requiresReconnect = true)
+    }
+
+    /**
+     * Reads exactly LBA 0-1 and returns sanitized MBR/GPT signature evidence.
+     *
+     * The application UI must keep this operation gated until issue #35 has physical validation.
+     */
+    suspend fun inspectPartitionHeaders(device: UsbDeviceDescriptor): RockchipPartitionHeaderProbeReport {
+        if (!PROBE_SLOT_RESERVED.compareAndSet(false, true)) {
+            return partitionHeaderFailureReport(
+                detail = "Não executado porque uma sessão USB anterior ainda está sendo encerrada.",
+                requiresReconnect = true,
+            )
+        }
+
+        var transportOpened = false
+        val transport = try {
+            opener.open(device).also { transportOpened = true }
+        } catch (error: SecurityException) {
+            return partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalArgumentException) {
+            return partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalStateException) {
+            return partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+        } finally {
+            if (!transportOpened) PROBE_SLOT_RESERVED.set(false)
+        }
+
+        val session = RockchipReadOnlySession(transport)
+        var report: RockchipPartitionHeaderProbeReport
+        var closeSucceeded = false
+        try {
+            val result = session.readLba(
+                startSector = RockchipPartitionHeaderInspector.START_SECTOR,
+                sectorCount = RockchipPartitionHeaderInspector.SECTOR_COUNT,
+                timeoutMillis = LBA_READ_TIMEOUT_MILLIS,
+            )
+            val inspection = RockchipPartitionHeaderInspector.inspect(result.data)
+            report = RockchipPartitionHeaderProbeReport(
+                transportMethod = transportMethod.displayName,
+                succeeded = true,
+                startSector = inspection.startSector,
+                sectorCount = inspection.sectorCount,
+                bytesRead = inspection.bytesInspected,
+                sha256 = inspection.sha256,
+                hasMbrSignature = inspection.hasMbrSignature,
+                hasGptSignature = inspection.hasGptSignature,
+                detail = "Inspeção fixa dos cabeçalhos MBR/GPT concluída.",
+                requiresReconnect = false,
+            )
+        } catch (timeout: TimeoutCancellationException) {
+            LOGGER.log(Level.WARNING, "Fixed Rockchip partition-header READ_LBA timed out.", timeout)
+            report = partitionHeaderFailureReport(
+                detail = "${transportMethod.displayName}/TIMEOUT: inspeção LBA 0-1 excedeu $LBA_READ_TIMEOUT_MILLIS ms.",
+                requiresReconnect = true,
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: RockchipUsbTransportException) {
+            report = partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalArgumentException) {
+            report = partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+        } catch (error: IllegalStateException) {
+            report = partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
         } finally {
             closeSucceeded = closeSessionWithinDeadline(session)
         }
@@ -299,6 +382,22 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
         bytesRead = 0,
         sha256 = null,
         previewHex = null,
+        detail = detail,
+        requiresReconnect = requiresReconnect,
+    )
+
+    private fun partitionHeaderFailureReport(
+        detail: String,
+        requiresReconnect: Boolean,
+    ): RockchipPartitionHeaderProbeReport = RockchipPartitionHeaderProbeReport(
+        transportMethod = transportMethod.displayName,
+        succeeded = false,
+        startSector = RockchipPartitionHeaderInspector.START_SECTOR,
+        sectorCount = RockchipPartitionHeaderInspector.SECTOR_COUNT,
+        bytesRead = 0,
+        sha256 = null,
+        hasMbrSignature = null,
+        hasGptSignature = null,
         detail = detail,
         requiresReconnect = requiresReconnect,
     )
