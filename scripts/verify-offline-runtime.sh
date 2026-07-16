@@ -29,10 +29,12 @@ for root in "${runtime_roots[@]}"; do
 done
 
 if ((${#existing_roots[@]} > 0)); then
-  if grep -RInE --include='*.kt' --include='*.java' --include='*.xml' \
+  # URL checks are intentionally limited to executable source. Android XML files contain
+  # mandatory schema namespace URLs that do not imply runtime network access.
+  if grep -RInE --include='*.kt' --include='*.java' \
       '(java\.net\.|javax\.net\.|android\.net\.(ConnectivityManager|NetworkCapabilities)|okhttp3\.|retrofit2\.|io\.ktor\.client|com\.android\.volley|WebView|http://|https://)' \
       "${existing_roots[@]}"; then
-    fail "network API, client library, WebView, or remote URL found in runtime source"
+    fail "network API, client library, WebView, or remote URL found in executable runtime source"
   fi
 fi
 
