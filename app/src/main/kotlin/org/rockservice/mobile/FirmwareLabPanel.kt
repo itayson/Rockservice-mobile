@@ -22,6 +22,7 @@ internal fun FirmwareLabPanel(
     onExportReport: (String) -> Unit,
     onExpandSparse: (String) -> Unit,
     onOpenBootExtraction: () -> Unit,
+    onOpenSuperExtraction: () -> Unit,
 ) {
     val expansionRunning = state.expansion is FirmwareLabExpansionState.Expanding
     Column(
@@ -43,9 +44,7 @@ internal fun FirmwareLabPanel(
         }
 
         when (val analysis = state.analysis) {
-            FirmwareLabAnalysisState.Idle -> {
-                Text("Nenhum arquivo analisado nesta sessao.")
-            }
+            FirmwareLabAnalysisState.Idle -> Text("Nenhum arquivo analisado nesta sessao.")
 
             is FirmwareLabAnalysisState.Analyzing -> {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -138,6 +137,27 @@ internal fun FirmwareLabPanel(
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Text("Abrir extracao controlada de payloads")
+                            }
+                        }
+                    }
+                }
+
+                if (report.detectedFormat == FirmwareFormat.ANDROID_SUPER_RAW) {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text("Particoes logicas Android super", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "A metadata liblp sera revalidada antes da exportacao. Escolha uma particao e um destino por vez; a super.img de origem permanece somente leitura.",
+                            )
+                            Button(
+                                onClick = onOpenSuperExtraction,
+                                enabled = !expansionRunning,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Abrir exportacao de particoes logicas")
                             }
                         }
                     }
