@@ -4,8 +4,13 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -96,6 +101,20 @@ class AndroidAdbUsbTransportTest {
     }
 
     @Test
+    fun `short positive timeout preserves useful blocking IO budget`() = runTest {
+        val io = FakeAdbUsbIo()
+        val transport = testTransport(io)
+
+        transport.send(AdbMessage(AdbCommand.OKAY, 1, 2), 200)
+
+        assertEquals(1, io.writeTimeouts.size)
+        assertTrue(
+            "A 200 ms operation should retain substantially more than a 1 ms blocking-I/O budget.",
+            io.writeTimeouts.single() >= 100,
+        )
+    }
+
+    @Test
     fun `default transport dispatcher keeps blocking IO off caller thread`() = runBlocking {
         val io = FakeAdbUsbIo()
         val transport = AndroidAdbUsbTransport(io)
@@ -123,6 +142,35 @@ class AndroidAdbUsbTransportTest {
         assertTrue(receiveError is IllegalArgumentException)
         assertTrue(io.writes.isEmpty())
         assertTrue(io.requestedReadLengths.isEmpty())
+    }
+
+    @Test
+    fun `cancelled close still releases USB after in-flight receive completes`() = runBlocking {
+        val incoming = AdbMessage(AdbCommand.OKAY, 9, 10)
+        val io = BlockingReadAdbUsbIo(incoming)
+        val transport = AndroidAdbUsbTransport(io, Dispatchers.IO)
+        val receiveJob = async(Dispatchers.IO) { transport.receive(5_000) }
+
+        assertTrue("Receive did not reach the blocking USB read.", io.readStarted.await(1, TimeUnit.SECONDS))
+        val closeJob = launch(Dispatchers.Default) { transport.close() }
+
+        withTimeout(1_000) {
+            while (true) {
+                val error = runCatching {
+                    transport.send(AdbMessage(AdbCommand.OKAY, 1, 2), 100)
+                }.exceptionOrNull()
+                if (error is IllegalStateException) break
+                yield()
+            }
+        }
+
+        closeJob.cancel()
+        delay(25)
+        io.releaseRead.countDown()
+        closeJob.join()
+        receiveJob.await()
+
+        assertEquals(1, io.closeCount)
     }
 
     @Test
@@ -156,11 +204,13 @@ class AndroidAdbUsbTransportTest {
     ) : AdbUsbIo {
         val writes = mutableListOf<ByteArray>()
         val requestedReadLengths = mutableListOf<Int>()
+        val writeTimeouts = mutableListOf<Int>()
         var closeCount = 0
         var lastWriteThreadId: Long? = null
 
         override fun writeExactly(bytes: ByteArray, timeoutMillis: Int) {
             lastWriteThreadId = Thread.currentThread().id
+            writeTimeouts += timeoutMillis
             writes += bytes.copyOf()
         }
 
@@ -187,6 +237,7 @@ class AndroidAdbUsbTransportTest {
         val releaseRead = CountDownLatch(1)
         val writeCompleted = CountDownLatch(1)
         val writes = mutableListOf<ByteArray>()
+        var closeCount = 0
 
         override fun writeExactly(bytes: ByteArray, timeoutMillis: Int) {
             synchronized(writes) {
@@ -202,7 +253,9 @@ class AndroidAdbUsbTransportTest {
             return header.copyOf()
         }
 
-        override fun close() = Unit
+        override fun close() {
+            closeCount += 1
+        }
     }
 
     private class DelayedTwoReadAdbUsbIo(
