@@ -4,7 +4,7 @@
 
 Este gate prepara o próximo passo entre a leitura física validada de um único setor no LBA 0 e qualquer futura leitura de tabelas de partição ou backup.
 
-A operação planejada permanece estritamente somente leitura e usa uma janela fixa, não configurável pelo operador:
+A operação permanece estritamente somente leitura e usa uma janela fixa, não configurável pelo operador:
 
 - LBA inicial: `0`;
 - quantidade: `2` setores;
@@ -27,7 +27,7 @@ A leitura desses dois setores permite diferenciar, de forma preliminar, estrutur
 
 ## Fronteira de segurança
 
-O código preparatório define o plano em `RockchipPartitionHeaderInspector` e não recebe offset ou quantidade informados externamente.
+O plano é definido em `RockchipPartitionHeaderInspector` e não recebe offset ou quantidade informados externamente.
 
 A inspeção aceita exatamente `1024` bytes. Qualquer resposta truncada ou maior que o esperado é rejeitada antes da análise.
 
@@ -42,18 +42,22 @@ O resultado sanitizado contém somente:
 
 O modelo não retém o conteúdo bruto.
 
-## Integração física futura
+## Integração com o transporte
 
-A integração com `RockchipReadOnlySession.readLba` deverá, em uma etapa separada:
+`AndroidRockchipReadOnlyMetadataClient.inspectPartitionHeaders` integra o plano ao mesmo transporte somente leitura usado pelo baseline já validado.
 
-1. exigir alvo explicitamente selecionado e revalidado;
-2. executar exatamente `readLba(startSector = 0, sectorCount = 2)`;
-3. usar timeout finito;
-4. validar resposta com exatamente `1024` bytes;
-5. passar os bytes ao parser puro;
-6. fechar a sessão dentro de prazo finito;
-7. exigir reconexão após timeout, falha de transporte ou fechamento incompleto;
-8. permanecer fora da UI padrão até evidência em hardware autorizado.
+A implementação:
+
+1. compartilha o gate global que impede sessões Rockchip concorrentes;
+2. abre e revalida o alvo pelo mesmo `RockchipReadOnlyTransportOpener`;
+3. executa exatamente `readLba(startSector = 0, sectorCount = 2)`;
+4. usa timeout finito;
+5. exige resposta com exatamente `1024` bytes;
+6. passa os bytes ao parser puro e retorna somente evidência sanitizada;
+7. fecha a sessão dentro de prazo finito;
+8. exige reconexão após timeout, falha de transporte, resposta inválida ou fechamento incompleto.
+
+A operação permanece fora da UI padrão até existir evidência em hardware autorizado para a issue #35.
 
 ## Fora de escopo
 
