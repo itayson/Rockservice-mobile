@@ -130,6 +130,16 @@ internal object FirmwareLabReportSections {
         },
     )
 
+    fun rawFilesystemRejected(reason: String?): FirmwareLabSection = FirmwareLabSection(
+        title = "Candidato a filesystem raw rejeitado",
+        lines = listOf(
+            "Uma assinatura candidata foi encontrada, mas os campos estruturais nao passaram pelas validacoes defensivas.",
+            "Motivo: ${reason?.takeIf(String::isNotBlank) ?: "estrutura invalida ou nao suportada"}",
+            "O SHA-256 integral da imagem permanece disponivel no Resumo.",
+            "Nenhum filesystem foi montado e nenhum arquivo interno foi extraido.",
+        ),
+    )
+
     private fun <T> boundedLines(
         values: List<T>,
         maximumListedEntries: Int,
