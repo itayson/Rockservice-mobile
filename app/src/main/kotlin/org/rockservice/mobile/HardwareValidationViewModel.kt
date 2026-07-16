@@ -46,6 +46,7 @@ internal data class HardwareValidationScreenState(
     val runState: HardwareValidationRunState = HardwareValidationRunState.Idle,
     val metadataProbeState: RockchipMetadataProbeState = RockchipMetadataProbeState.Idle,
     val exportMessage: String? = null,
+    val boundedReadRetryBlocked: Boolean = false,
 )
 
 /** Owns passive hardware-validation evidence without retaining Android USB transport identifiers. */
@@ -65,17 +66,18 @@ internal class HardwareValidationViewModel : ViewModel() {
     val state = mutableState.asStateFlow()
 
     fun setBoardOrDeviceModel(value: String) {
-        mutableState.value = mutableState.value.copy(boardOrDeviceModel = value.take(MAXIMUM_NOTE_LENGTH))
+        updateState { current -> current.copy(boardOrDeviceModel = value.take(MAXIMUM_NOTE_LENGTH)) }
     }
 
     fun setKnownSoc(value: String) {
-        mutableState.value = mutableState.value.copy(knownSoc = value.take(MAXIMUM_NOTE_LENGTH))
+        updateState { current -> current.copy(knownSoc = value.take(MAXIMUM_NOTE_LENGTH)) }
     }
 
     fun setOtgAdapter(value: String) {
-        mutableState.value = mutableState.value.copy(otgAdapter = value.take(MAXIMUM_NOTE_LENGTH))
+        updateState { current -> current.copy(otgAdapter = value.take(MAXIMUM_NOTE_LENGTH)) }
     }
 
+    /** Clears target-scoped state when the operator selects a different USB target. */
     fun invalidateActiveTarget() {
         validationJob?.cancel()
         metadataProbeJob?.cancel()
@@ -88,11 +90,16 @@ internal class HardwareValidationViewModel : ViewModel() {
                 runState = HardwareValidationRunState.Idle,
                 metadataProbeState = RockchipMetadataProbeState.Idle,
                 exportMessage = null,
+                boundedReadRetryBlocked = false,
             )
         }
     }
 
-    fun recordAttachmentEvent(kind: UsbAttachmentEventKind) {
+    /** Records a sanitized USB event and updates the reconnect latch only for the selected target. */
+    fun recordAttachmentEvent(
+        kind: UsbAttachmentEventKind,
+        affectsSelectedTarget: Boolean,
+    ) {
         val event = UsbHardwareValidationEvent(
             kind = kind,
             timestampEpochMillis = System.currentTimeMillis(),
@@ -105,13 +112,25 @@ internal class HardwareValidationViewModel : ViewModel() {
             metadataProbeGeneration += 1L
             exportGeneration += 1L
             val current = mutableState.value
+            val retryBlocked = when {
+                !affectsSelectedTarget -> current.boundedReadRetryBlocked
+                kind == UsbAttachmentEventKind.ATTACHED -> false
+                kind == UsbAttachmentEventKind.DETACHED -> true
+                else -> current.boundedReadRetryBlocked
+            }
             mutableState.value = current.copy(
                 events = (current.events + event).takeLast(MAXIMUM_RECORDED_EVENTS),
                 runState = HardwareValidationRunState.Idle,
                 metadataProbeState = RockchipMetadataProbeState.Idle,
                 exportMessage = null,
+                boundedReadRetryBlocked = retryBlocked,
             )
         }
+    }
+
+    /** Latches bounded-read retry until the selected target is reattached or changed. */
+    fun blockBoundedReadRetry() {
+        updateState { current -> current.copy(boundedReadRetryBlocked = true) }
     }
 
     fun runValidation(
@@ -263,6 +282,14 @@ internal class HardwareValidationViewModel : ViewModel() {
             exportGeneration += 1L
         }
         super.onCleared()
+    }
+
+    private inline fun updateState(
+        transform: (HardwareValidationScreenState) -> HardwareValidationScreenState,
+    ) {
+        synchronized(stateLock) {
+            mutableState.value = transform(mutableState.value)
+        }
     }
 
     private fun failedCheck(detail: String): UsbHardwareValidationDescriptorCheck =
