@@ -287,6 +287,7 @@ private fun diagnosticStatusLabel(status: AdbDiagnosticSectionStatus): String = 
 }
 
 private fun safePreview(value: String, maximumChars: Int): String {
+    require(maximumChars > 0) { "Limite de previa deve ser positivo." }
     val sanitized = buildString(minOf(value.length, maximumChars + 1)) {
         value.forEach { character ->
             when {
@@ -298,7 +299,7 @@ private fun safePreview(value: String, maximumChars: Int): String {
         }
     }
     return if (sanitized.length > maximumChars) {
-        sanitized.take(maximumChars) + "…"
+        sanitized.take(maximumChars - 1) + "…"
     } else {
         sanitized
     }
