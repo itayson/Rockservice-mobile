@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
@@ -109,10 +110,12 @@ internal class AndroidAdbUsbTransport(
     override suspend fun close() {
         closeMutex.withLock {
             if (!closed.compareAndSet(false, true)) return@withLock
-            sendMutex.withLock {
-                receiveMutex.withLock {
-                    withContext(blockingDispatcher) {
-                        io.close()
+            withContext(NonCancellable) {
+                sendMutex.withLock {
+                    receiveMutex.withLock {
+                        withContext(blockingDispatcher) {
+                            io.close()
+                        }
                     }
                 }
             }
@@ -120,7 +123,8 @@ internal class AndroidAdbUsbTransport(
     }
 
     private fun ioDeadlineAfter(timeoutMillis: Long): Long {
-        val boundedTimeoutMillis = (timeoutMillis - IO_TIMEOUT_MARGIN_MILLIS)
+        val marginMillis = minOf(IO_TIMEOUT_MARGIN_MILLIS, timeoutMillis / 4L)
+        val boundedTimeoutMillis = (timeoutMillis - marginMillis)
             .coerceAtLeast(1L)
             .coerceAtMost(Int.MAX_VALUE.toLong())
         return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(boundedTimeoutMillis)
