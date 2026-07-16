@@ -23,7 +23,7 @@ class AdbSyncPullCodecTest {
     }
 
     @Test
-    fun `RECV validates UTF8 byte length instead of Kotlin character count`() {
+    fun `RECV validates UTF8 byte length without imposing filename whitespace policy`() {
         val withinLimit = "é".repeat(AdbSyncPullCodec.MAXIMUM_PATH_BYTES / 2)
         val tooLarge = withinLimit + "a"
 
@@ -31,9 +31,14 @@ class AdbSyncPullCodecTest {
             AdbSyncPullCodec.HEADER_SIZE_BYTES + AdbSyncPullCodec.MAXIMUM_PATH_BYTES,
             AdbSyncPullCodec.encodeReceiveRequest(withinLimit).size,
         )
+        assertEquals(
+            AdbSyncPullCodec.HEADER_SIZE_BYTES + 1,
+            AdbSyncPullCodec.encodeReceiveRequest(" ").size,
+        )
         expectIllegalArgument { AdbSyncPullCodec.encodeReceiveRequest(tooLarge) }
-        expectIllegalArgument { AdbSyncPullCodec.encodeReceiveRequest(" ") }
+        expectIllegalArgument { AdbSyncPullCodec.encodeReceiveRequest("") }
         expectIllegalArgument { AdbSyncPullCodec.encodeReceiveRequest("/data/local\u0000tmp") }
+        expectIllegalArgument { AdbSyncPullCodec.encodeReceiveRequest("\uD800") }
     }
 
     @Test
@@ -138,12 +143,18 @@ class AdbSyncPullCodecTest {
     }
 
     @Test
-    fun `DATA response uses content equality instead of ByteArray reference equality`() {
-        val first = AdbSyncPullResponse.Data(byteArrayOf(1, 2, 3))
+    fun `DATA response uses content equality and never exposes mutable backing bytes`() {
+        val source = byteArrayOf(1, 2, 3)
+        val first = AdbSyncPullResponse.Data(source)
         val second = AdbSyncPullResponse.Data(byteArrayOf(1, 2, 3))
+
+        source[0] = 9
+        val exposed = first.bytes
+        exposed[1] = 9
 
         assertEquals(first, second)
         assertEquals(first.hashCode(), second.hashCode())
+        assertArrayEquals(byteArrayOf(1, 2, 3), first.bytes)
     }
 
     private fun syncFrame(command: String, payload: ByteArray): ByteArray =
