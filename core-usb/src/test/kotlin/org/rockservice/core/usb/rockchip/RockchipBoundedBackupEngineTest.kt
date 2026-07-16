@@ -120,16 +120,21 @@ class RockchipBoundedBackupEngineTest {
 
     @Test
     fun `reader receives shrinking remaining timeout budget`() = runTest {
+        var nowNanos = 1_000_000_000L
         val observedTimeouts = mutableListOf<Long>()
         val reader = object : RockchipBoundedLbaReader {
             override suspend fun readLba(startSector: Long, sectorCount: Int, timeoutMillis: Long): ByteArray {
                 observedTimeouts += timeoutMillis
-                if (observedTimeouts.size == 1) delay(50)
+                nowNanos += 250_000_000L
                 return ByteArray(sectorCount * 512)
             }
         }
 
-        RockchipBoundedBackupEngine(maximumSectorCount = 4, chunkSectorCount = 1).backup(
+        RockchipBoundedBackupEngine(
+            maximumSectorCount = 4,
+            chunkSectorCount = 1,
+            monotonicNanos = { nowNanos },
+        ).backup(
             reader = reader,
             startSector = 0,
             sectorCount = 2,
@@ -137,8 +142,7 @@ class RockchipBoundedBackupEngineTest {
             onData = {},
         )
 
-        assertEquals(2, observedTimeouts.size)
-        assertTrue(observedTimeouts[1] < observedTimeouts[0])
+        assertEquals(listOf(1_000L, 750L), observedTimeouts)
     }
 
     private data class Request(val startSector: Long, val sectorCount: Int, val bytes: ByteArray)
