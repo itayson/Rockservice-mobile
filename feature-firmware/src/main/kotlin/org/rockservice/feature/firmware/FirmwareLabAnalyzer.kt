@@ -9,6 +9,7 @@ internal data class FirmwareLabParserOperations(
     val parseBoot: (InputStream) -> AndroidBootImageMetadata,
     val parseSuper: (InputStream, AndroidSuperMetadataCopy) -> AndroidSuperMetadata,
     val parseSparseSuper: (() -> InputStream) -> AndroidSuperMetadata?,
+    val inspectRawFilesystem: (InputStream) -> RawFilesystemInspection = RawFilesystemInspector()::inspect,
 )
 
 /**
@@ -28,16 +29,16 @@ class FirmwareLabAnalyzer internal constructor(
         bootParser: AndroidBootImageParser = AndroidBootImageParser(),
         superParser: AndroidSuperMetadataParser = AndroidSuperMetadataParser(),
         sparseSuperParser: AndroidSparseSuperMetadataParser = AndroidSparseSuperMetadataParser(),
+        rawFilesystemInspector: RawFilesystemInspector = RawFilesystemInspector(),
         maximumListedEntries: Int = DEFAULT_MAXIMUM_LISTED_ENTRIES,
     ) : this(
         parserOperations = FirmwareLabParserOperations(
             analyzeFirmware = firmwareAnalyzer::analyze,
             parseSparse = sparseParser::parse,
             parseBoot = bootParser::parse,
-            parseSuper = { source, copy ->
-                superParser.parse(source, metadataCopy = copy)
-            },
+            parseSuper = { source, copy -> superParser.parse(source, metadataCopy = copy) },
             parseSparseSuper = sparseSuperParser::parseIfPresent,
+            inspectRawFilesystem = rawFilesystemInspector::inspect,
         ),
         maximumListedEntries = maximumListedEntries,
     )
@@ -81,17 +82,27 @@ class FirmwareLabAnalyzer internal constructor(
                 sections += FirmwareLabReportSections.superImage(metadata, maximumListedEntries)
             }
 
+            FirmwareFormat.UNKNOWN -> {
+                if (baseAnalysis.bytesRead < MINIMUM_RAW_FILESYSTEM_INSPECTION_BYTES) {
+                    sections += unsupportedSection()
+                } else {
+                    try {
+                        val inspection = openStream().use(parserOperations.inspectRawFilesystem)
+                        if (inspection.type == RawFilesystemType.UNKNOWN) {
+                            sections += unsupportedSection()
+                        } else {
+                            sections += FirmwareLabReportSections.rawFilesystem(inspection)
+                        }
+                    } catch (error: IllegalArgumentException) {
+                        sections += FirmwareLabReportSections.rawFilesystemRejected(error.message)
+                    }
+                }
+            }
+
             FirmwareFormat.ZIP,
             FirmwareFormat.ELF,
             FirmwareFormat.ISO_9660,
-            FirmwareFormat.UNKNOWN,
-            -> sections += FirmwareLabSection(
-                title = "Analise estrutural especializada",
-                lines = listOf(
-                    "Nenhum parser estrutural adicional esta habilitado para este formato nesta versao.",
-                    "O arquivo nao foi extraido, montado ou modificado.",
-                ),
-            )
+            -> sections += unsupportedSection()
         }
 
         return FirmwareLabReport(
@@ -126,7 +137,16 @@ class FirmwareLabAnalyzer internal constructor(
         }
     }
 
+    private fun unsupportedSection(): FirmwareLabSection = FirmwareLabSection(
+        title = "Analise estrutural especializada",
+        lines = listOf(
+            "Nenhum parser estrutural adicional esta habilitado para este formato nesta versao.",
+            "O arquivo nao foi extraido, montado ou modificado.",
+        ),
+    )
+
     private companion object {
         const val DEFAULT_MAXIMUM_LISTED_ENTRIES = 200
+        const val MINIMUM_RAW_FILESYSTEM_INSPECTION_BYTES = 2048L
     }
 }
