@@ -31,6 +31,7 @@ data class RockchipBoundedBackupProgress(
 internal class RockchipBoundedBackupEngine(
     private val maximumSectorCount: Long = DEFAULT_MAXIMUM_SECTOR_COUNT,
     private val chunkSectorCount: Int = RockchipReadOnlyProtocolCodec.MAX_BOUNDED_LBA_SECTORS,
+    private val monotonicNanos: () -> Long = System::nanoTime,
 ) {
     init {
         require(maximumSectorCount in 1L..HARD_MAXIMUM_SECTOR_COUNT) {
@@ -93,7 +94,6 @@ internal class RockchipBoundedBackupEngine(
                     "Rockchip backup chunk returned ${chunk.size} bytes; expected $expectedBytes."
                 }
 
-                // Hash the transport bytes before exposing the mutable array to caller code.
                 digest.update(chunk)
                 onData(chunk)
                 completedSectors += sectorsThisChunk.toLong()
@@ -131,11 +131,11 @@ internal class RockchipBoundedBackupEngine(
 
     private fun deadlineAfter(timeoutMillis: Long): Long {
         val timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
-        return Math.addExact(System.nanoTime(), timeoutNanos)
+        return Math.addExact(monotonicNanos(), timeoutNanos)
     }
 
     private fun remainingTimeoutMillis(deadlineNanos: Long): Long {
-        val remainingNanos = deadlineNanos - System.nanoTime()
+        val remainingNanos = deadlineNanos - monotonicNanos()
         check(remainingNanos > 0L) { "Rockchip backup deadline expired before the next READ_LBA chunk." }
         return ((remainingNanos + NANOS_PER_MILLISECOND - 1L) / NANOS_PER_MILLISECOND)
             .coerceAtLeast(1L)
