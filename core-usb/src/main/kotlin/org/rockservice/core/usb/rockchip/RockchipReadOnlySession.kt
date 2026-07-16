@@ -76,6 +76,50 @@ internal class RockchipReadOnlySession(
         }
     }
 
+    suspend fun readLba(
+        startSector: Long,
+        sectorCount: Int,
+        timeoutMillis: Long = DEFAULT_TIMEOUT_MILLIS,
+    ): RockchipReadOnlyLbaExchangeResult {
+        require(timeoutMillis > 0) { "timeoutMillis must be greater than zero." }
+
+        return withTimeout(timeoutMillis) {
+            operationMutex.withLock {
+                check(!closed) { "Rockchip read-only session is closed." }
+                currentCoroutineContext().ensureActive()
+
+                val tag = nextTag.getAndIncrement()
+                val command = RockchipReadOnlyProtocolCodec.encodeReadLbaCommand(
+                    tag = tag,
+                    startSector = startSector,
+                    sectorCount = sectorCount,
+                )
+                val expectedBytes = Math.multiplyExact(
+                    sectorCount,
+                    RockchipReadOnlyProtocolCodec.LOGICAL_SECTOR_SIZE,
+                )
+                val raw = transport.exchange(
+                    command = command,
+                    responseLengthRange = expectedBytes..expectedBytes,
+                    timeoutMillis = timeoutMillis,
+                )
+                currentCoroutineContext().ensureActive()
+
+                val result = RockchipReadOnlyProtocolCodec.decodeReadLbaExchange(
+                    startSector = startSector,
+                    sectorCount = sectorCount,
+                    data = raw.data,
+                    statusBytes = raw.statusBytes,
+                    expectedTag = tag,
+                )
+                check(result.status.status == RockchipCommandStatus.PASSED) {
+                    "Rockchip READ_LBA failed with ${result.status.status}."
+                }
+                result
+            }
+        }
+    }
+
     suspend fun close() {
         operationMutex.withLock {
             if (closed) return
