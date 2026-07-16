@@ -1,5 +1,6 @@
 package org.rockservice.core.usb.rockchip
 
+import java.io.IOException
 import java.io.InputStream
 import java.security.MessageDigest
 
@@ -13,7 +14,11 @@ data class RockchipBackupManifest(
     init {
         require(startSector >= 0L) { "startSector must not be negative." }
         require(sectorCount > 0L) { "sectorCount must be greater than zero." }
-        require(byteCount == Math.multiplyExact(sectorCount, LOGICAL_SECTOR_SIZE.toLong())) {
+        require(sectorCount <= Long.MAX_VALUE / LOGICAL_SECTOR_SIZE.toLong()) {
+            "sectorCount is too large to represent the backup size in bytes."
+        }
+        val expectedByteCount = sectorCount * LOGICAL_SECTOR_SIZE.toLong()
+        require(byteCount == expectedByteCount) {
             "byteCount must match sectorCount * $LOGICAL_SECTOR_SIZE."
         }
         require(SHA256_REGEX.matches(sha256)) { "sha256 must be a lowercase 64-character hexadecimal digest." }
@@ -25,6 +30,7 @@ data class RockchipBackupManifest(
     }
 }
 
+/** Result of independently checking a local backup against its immutable manifest. */
 data class RockchipBackupVerificationResult(
     val expectedByteCount: Long,
     val actualByteCount: Long,
@@ -42,6 +48,7 @@ data class RockchipBackupVerificationResult(
  * The verifier performs no USB access and exposes no write capability.
  */
 object RockchipBackupVerifier {
+    /** Reads the supplied local stream once and compares its byte count and SHA-256 with [manifest]. */
     fun verify(
         manifest: RockchipBackupManifest,
         source: InputStream,
@@ -55,12 +62,19 @@ object RockchipBackupVerifier {
         val buffer = ByteArray(bufferSize)
         var total = 0L
 
-        while (true) {
-            val read = source.read(buffer)
-            if (read < 0) break
-            if (read == 0) continue
-            total = Math.addExact(total, read.toLong())
-            digest.update(buffer, 0, read)
+        try {
+            while (true) {
+                val read = source.read(buffer)
+                if (read < 0) break
+                if (read == 0) continue
+                total = Math.addExact(total, read.toLong())
+                digest.update(buffer, 0, read)
+            }
+        } catch (error: IOException) {
+            throw IOException(
+                "Failed to read the local backup while verifying its size and SHA-256.",
+                error,
+            )
         }
 
         return RockchipBackupVerificationResult(
