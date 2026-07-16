@@ -22,6 +22,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
+import java.io.IOException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -102,6 +104,12 @@ class HardwareValidationActivity : ComponentActivity() {
                     lbaRunning = false
                     lbaReport = null
                     lbaError = null
+                }
+
+                LaunchedEffect(usbState.selectedTransportId, validationState.metadataProbeState) {
+                    if (validationState.metadataProbeState !is RockchipMetadataProbeState.Ready) {
+                        clearBoundedReadState()
+                    }
                 }
 
                 Scaffold(
@@ -344,9 +352,17 @@ class HardwareValidationActivity : ComponentActivity() {
                                                             }
                                                         } catch (cancelled: CancellationException) {
                                                             throw cancelled
+                                                        } catch (error: SecurityException) {
+                                                            lbaError = "O Android negou acesso USB: ${error.message ?: "sem detalhe"}."
+                                                        } catch (error: IllegalArgumentException) {
+                                                            lbaError = error.message ?: "O alvo USB mudou ou deixou de estar conectado."
+                                                        } catch (error: IllegalStateException) {
+                                                            lbaError = error.message
+                                                                ?: "A permissao USB foi negada ou a conexao nao pode ser aberta."
+                                                        } catch (error: IOException) {
+                                                            lbaError = error.message ?: "Falha de entrada/saida durante a leitura limitada."
                                                         } catch (error: RuntimeException) {
-                                                            lbaError = error.message?.take(240)?.ifBlank { null }
-                                                                ?: "Falha inesperada ${error.javaClass.simpleName} na leitura limitada."
+                                                            lbaError = "Falha inesperada ${error.javaClass.simpleName} na leitura limitada."
                                                         } finally {
                                                             lbaRunning = false
                                                         }
