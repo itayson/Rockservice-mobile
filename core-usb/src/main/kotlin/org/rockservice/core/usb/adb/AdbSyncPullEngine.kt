@@ -15,9 +15,7 @@ data class AdbSyncPullResult(
 /** The remote Sync service returned a terminal FAIL response. */
 class AdbSyncRemoteFailureException(
     val remoteMessage: String,
-) : IllegalStateException(
-    if (remoteMessage.isBlank()) "ADB Sync remoto retornou FAIL." else "ADB Sync remoto: $remoteMessage",
-)
+) : IllegalStateException(remoteFailureDisplayMessage(remoteMessage))
 
 /** A pull would exceed the caller-approved maximum byte count. */
 class AdbSyncPullLimitExceededException(
@@ -85,7 +83,8 @@ class AdbSyncPullEngine(
                 // timeout for the initial RECV request.
                 stream.write(request, timeoutMillis)
 
-                while (true) {
+                var result: AdbSyncPullResult? = null
+                pullLoop@ while (result == null) {
                     val transportChunk = stream.read()
                         ?: throw protocolErrorFromPrematureClose(decoder)
                     val responses = try {
@@ -130,10 +129,11 @@ class AdbSyncPullEngine(
                                     )
                                 }
                                 completedSuccessfully = true
-                                return@withTimeout AdbSyncPullResult(
+                                result = AdbSyncPullResult(
                                     byteCount = deliveredBytes,
                                     sha256 = digest.digest().toLowerHex(),
                                 )
+                                break@pullLoop
                             }
 
                             is AdbSyncPullResponse.Fail -> {
@@ -142,6 +142,7 @@ class AdbSyncPullEngine(
                         }
                     }
                 }
+                checkNotNull(result)
             }
         } catch (cancelled: CancellationException) {
             // Includes the total withTimeout deadline. Preserve cancellation semantics for callers.
@@ -214,6 +215,26 @@ private class SessionSyncPullStream(
     }
 }
 
+private fun remoteFailureDisplayMessage(remoteMessage: String): String {
+    if (remoteMessage.isBlank()) return "ADB Sync remoto retornou FAIL."
+    val sanitized = buildString(minOf(remoteMessage.length, MAXIMUM_REMOTE_FAILURE_DISPLAY_CHARS + 1)) {
+        remoteMessage.forEach { character ->
+            when {
+                character == '\n' || character == '\r' || character == '\t' -> append(character)
+                character.isISOControl() -> append('\uFFFD')
+                else -> append(character)
+            }
+            if (length > MAXIMUM_REMOTE_FAILURE_DISPLAY_CHARS) return@buildString
+        }
+    }
+    val preview = if (sanitized.length > MAXIMUM_REMOTE_FAILURE_DISPLAY_CHARS) {
+        sanitized.take(MAXIMUM_REMOTE_FAILURE_DISPLAY_CHARS - 1) + "…"
+    } else {
+        sanitized
+    }
+    return "ADB Sync remoto: $preview"
+}
+
 private fun ByteArray.toLowerHex(): String {
     val digits = "0123456789abcdef"
     return buildString(size * 2) {
@@ -224,3 +245,5 @@ private fun ByteArray.toLowerHex(): String {
         }
     }
 }
+
+private const val MAXIMUM_REMOTE_FAILURE_DISPLAY_CHARS = 512
