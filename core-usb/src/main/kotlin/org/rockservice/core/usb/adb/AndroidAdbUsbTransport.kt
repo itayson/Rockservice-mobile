@@ -10,6 +10,7 @@ import android.hardware.usb.UsbManager
 import java.io.Closeable
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -44,6 +45,7 @@ interface AdbMessageTransport {
 /** Android USB Host transport restricted to a single validated ADB interface profile. */
 internal class AndroidAdbUsbTransport(
     private val io: AdbUsbIo,
+    private val blockingDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : AdbMessageTransport {
     private val closed = AtomicBoolean(false)
     private val sendMutex = Mutex()
@@ -58,7 +60,7 @@ internal class AndroidAdbUsbTransport(
                 check(!closed.get()) { "ADB USB transport is closed." }
                 currentCoroutineContext().ensureActive()
                 val frame = AdbProtocolCodec.encode(message)
-                withContext(Dispatchers.IO) {
+                withContext(blockingDispatcher) {
                     io.writeExactly(
                         frame,
                         remainingIoTimeout(ioDeadlineNanos, "ADB USB send"),
@@ -80,7 +82,7 @@ internal class AndroidAdbUsbTransport(
                 check(!closed.get()) { "ADB USB transport is closed." }
                 currentCoroutineContext().ensureActive()
 
-                val headerBytes = withContext(Dispatchers.IO) {
+                val headerBytes = withContext(blockingDispatcher) {
                     io.readExactly(
                         AdbProtocolCodec.HEADER_SIZE_BYTES,
                         remainingIoTimeout(ioDeadlineNanos, "ADB USB receive header"),
@@ -91,7 +93,7 @@ internal class AndroidAdbUsbTransport(
                 val payload = if (header.dataLength == 0) {
                     ByteArray(0)
                 } else {
-                    withContext(Dispatchers.IO) {
+                    withContext(blockingDispatcher) {
                         io.readExactly(
                             header.dataLength,
                             remainingIoTimeout(ioDeadlineNanos, "ADB USB receive payload"),
@@ -109,7 +111,7 @@ internal class AndroidAdbUsbTransport(
             if (!closed.compareAndSet(false, true)) return@withLock
             sendMutex.withLock {
                 receiveMutex.withLock {
-                    withContext(Dispatchers.IO) {
+                    withContext(blockingDispatcher) {
                         io.close()
                     }
                 }
