@@ -64,7 +64,7 @@ data class RockchipPartitionHeaderProbeReport(
     val requiresReconnect: Boolean = false,
 )
 
-/** Metadata-only facade for the physically validated Android Rockchip USB transport. */
+/** Read-only facade for the physically validated Android Rockchip USB transport. */
 class AndroidRockchipReadOnlyMetadataClient internal constructor(
     private val opener: RockchipReadOnlyTransportOpener,
     private val transportMethod: RockchipUsbIoMethod,
@@ -81,26 +81,15 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
 
     suspend fun probe(device: UsbDeviceDescriptor): RockchipMetadataProbeReport {
         val specs = querySpecs()
-        if (!PROBE_SLOT_RESERVED.compareAndSet(false, true)) return blockedReport(specs)
+        return withGatedSession(
+            device = device,
+            blockedResult = { blockedReport(specs) },
+            openFailureResult = { detail -> failedOpenReport(specs, detail) },
+            closeFailureResult = { report -> report.copy(requiresReconnect = true) },
+        ) { session ->
+            val entries = mutableListOf<RockchipMetadataProbeEntry>()
+            var requiresReconnect = false
 
-        var transportOpened = false
-        val transport = try {
-            opener.open(device).also { transportOpened = true }
-        } catch (error: SecurityException) {
-            return failedOpenReport(specs, error.safeMessage())
-        } catch (error: IllegalArgumentException) {
-            return failedOpenReport(specs, error.safeMessage())
-        } catch (error: IllegalStateException) {
-            return failedOpenReport(specs, error.safeMessage())
-        } finally {
-            if (!transportOpened) PROBE_SLOT_RESERVED.set(false)
-        }
-
-        val session = RockchipReadOnlySession(transport)
-        val entries = mutableListOf<RockchipMetadataProbeEntry>()
-        var requiresReconnect = false
-
-        try {
             for ((index, spec) in specs.withIndex()) {
                 val outcome = query(session, spec)
                 entries += outcome.entry
@@ -113,148 +102,146 @@ class AndroidRockchipReadOnlyMetadataClient internal constructor(
                     break
                 }
             }
-        } finally {
-            if (!closeSessionWithinDeadline(session)) requiresReconnect = true
-        }
 
-        return RockchipMetadataProbeReport(
-            transportMethod = transportMethod.displayName,
-            entries = entries,
-            requiresReconnect = requiresReconnect,
-        )
+            RockchipMetadataProbeReport(
+                transportMethod = transportMethod.displayName,
+                entries = entries,
+                requiresReconnect = requiresReconnect,
+            )
+        }
     }
 
     /** Runs exactly one read-only 512-byte READ_LBA transaction at sector zero. */
-    suspend fun readFirstSector(device: UsbDeviceDescriptor): RockchipBoundedLbaProbeReport {
-        if (!PROBE_SLOT_RESERVED.compareAndSet(false, true)) {
-            return lbaFailureReport(
-                detail = "Não executado porque uma sessão USB anterior ainda está sendo encerrada.",
-                requiresReconnect = true,
-            )
+    suspend fun readFirstSector(device: UsbDeviceDescriptor): RockchipBoundedLbaProbeReport =
+        withGatedSession(
+            device = device,
+            blockedResult = {
+                lbaFailureReport(
+                    detail = "Não executado porque uma sessão USB anterior ainda está sendo encerrada.",
+                    requiresReconnect = true,
+                )
+            },
+            openFailureResult = { detail -> lbaFailureReport(detail, requiresReconnect = true) },
+            closeFailureResult = { report -> report.copy(requiresReconnect = true) },
+        ) { session ->
+            try {
+                val result = session.readLba(
+                    startSector = LBA_VALIDATION_START_SECTOR,
+                    sectorCount = LBA_VALIDATION_SECTOR_COUNT,
+                    timeoutMillis = LBA_READ_TIMEOUT_MILLIS,
+                )
+                RockchipBoundedLbaProbeReport(
+                    transportMethod = transportMethod.displayName,
+                    succeeded = true,
+                    startSector = result.startSector,
+                    sectorCount = result.sectorCount,
+                    bytesRead = result.data.size,
+                    sha256 = result.data.sha256(),
+                    previewHex = result.data.take(LBA_PREVIEW_BYTES)
+                        .joinToString("") { byte -> "%02X".format(byte) },
+                    detail = "Leitura limitada de um único setor concluída.",
+                    requiresReconnect = false,
+                )
+            } catch (timeout: TimeoutCancellationException) {
+                LOGGER.log(Level.WARNING, "Bounded Rockchip READ_LBA timed out.", timeout)
+                lbaFailureReport(
+                    detail = "${transportMethod.displayName}/TIMEOUT: READ_LBA excedeu $LBA_READ_TIMEOUT_MILLIS ms.",
+                    requiresReconnect = true,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: RockchipUsbTransportException) {
+                lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+            } catch (error: IllegalArgumentException) {
+                lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+            } catch (error: IllegalStateException) {
+                lbaFailureReport(error.safeMessage(), requiresReconnect = true)
+            }
         }
-
-        var transportOpened = false
-        val transport = try {
-            opener.open(device).also { transportOpened = true }
-        } catch (error: SecurityException) {
-            return lbaFailureReport(error.safeMessage(), requiresReconnect = true)
-        } catch (error: IllegalArgumentException) {
-            return lbaFailureReport(error.safeMessage(), requiresReconnect = true)
-        } catch (error: IllegalStateException) {
-            return lbaFailureReport(error.safeMessage(), requiresReconnect = true)
-        } finally {
-            if (!transportOpened) PROBE_SLOT_RESERVED.set(false)
-        }
-
-        val session = RockchipReadOnlySession(transport)
-        var report: RockchipBoundedLbaProbeReport
-        var closeSucceeded = false
-        try {
-            val result = session.readLba(
-                startSector = LBA_VALIDATION_START_SECTOR,
-                sectorCount = LBA_VALIDATION_SECTOR_COUNT,
-                timeoutMillis = LBA_READ_TIMEOUT_MILLIS,
-            )
-            report = RockchipBoundedLbaProbeReport(
-                transportMethod = transportMethod.displayName,
-                succeeded = true,
-                startSector = result.startSector,
-                sectorCount = result.sectorCount,
-                bytesRead = result.data.size,
-                sha256 = result.data.sha256(),
-                previewHex = result.data.take(LBA_PREVIEW_BYTES)
-                    .joinToString("") { byte -> "%02X".format(byte) },
-                detail = "Leitura limitada de um único setor concluída.",
-                requiresReconnect = false,
-            )
-        } catch (timeout: TimeoutCancellationException) {
-            LOGGER.log(Level.WARNING, "Bounded Rockchip READ_LBA timed out.", timeout)
-            report = lbaFailureReport(
-                detail = "${transportMethod.displayName}/TIMEOUT: READ_LBA excedeu $LBA_READ_TIMEOUT_MILLIS ms.",
-                requiresReconnect = true,
-            )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: RockchipUsbTransportException) {
-            report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
-        } catch (error: IllegalArgumentException) {
-            report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
-        } catch (error: IllegalStateException) {
-            report = lbaFailureReport(error.safeMessage(), requiresReconnect = true)
-        } finally {
-            closeSucceeded = closeSessionWithinDeadline(session)
-        }
-
-        return if (closeSucceeded) report else report.copy(requiresReconnect = true)
-    }
 
     /**
      * Reads exactly LBA 0-1 and returns sanitized MBR/GPT signature evidence.
      *
      * The application UI must keep this operation gated until issue #35 has physical validation.
      */
-    suspend fun inspectPartitionHeaders(device: UsbDeviceDescriptor): RockchipPartitionHeaderProbeReport {
-        if (!PROBE_SLOT_RESERVED.compareAndSet(false, true)) {
-            return partitionHeaderFailureReport(
-                detail = "Não executado porque uma sessão USB anterior ainda está sendo encerrada.",
-                requiresReconnect = true,
-            )
+    suspend fun inspectPartitionHeaders(device: UsbDeviceDescriptor): RockchipPartitionHeaderProbeReport =
+        withGatedSession(
+            device = device,
+            blockedResult = {
+                partitionHeaderFailureReport(
+                    detail = "Não executado porque uma sessão USB anterior ainda está sendo encerrada.",
+                    requiresReconnect = true,
+                )
+            },
+            openFailureResult = { detail -> partitionHeaderFailureReport(detail, requiresReconnect = true) },
+            closeFailureResult = { report -> report.copy(requiresReconnect = true) },
+        ) { session ->
+            try {
+                val result = session.readLba(
+                    startSector = RockchipPartitionHeaderInspector.START_SECTOR,
+                    sectorCount = RockchipPartitionHeaderInspector.SECTOR_COUNT,
+                    timeoutMillis = LBA_READ_TIMEOUT_MILLIS,
+                )
+                val inspection = RockchipPartitionHeaderInspector.inspect(result.data)
+                RockchipPartitionHeaderProbeReport(
+                    transportMethod = transportMethod.displayName,
+                    succeeded = true,
+                    startSector = inspection.startSector,
+                    sectorCount = inspection.sectorCount,
+                    bytesRead = inspection.bytesInspected,
+                    sha256 = inspection.sha256,
+                    hasMbrSignature = inspection.hasMbrSignature,
+                    hasGptSignature = inspection.hasGptSignature,
+                    detail = "Inspeção fixa dos cabeçalhos MBR/GPT concluída.",
+                    requiresReconnect = false,
+                )
+            } catch (timeout: TimeoutCancellationException) {
+                LOGGER.log(Level.WARNING, "Fixed Rockchip partition-header READ_LBA timed out.", timeout)
+                partitionHeaderFailureReport(
+                    detail = "${transportMethod.displayName}/TIMEOUT: inspeção LBA 0-1 excedeu $LBA_READ_TIMEOUT_MILLIS ms.",
+                    requiresReconnect = true,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: RockchipUsbTransportException) {
+                partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+            } catch (error: IllegalArgumentException) {
+                partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+            } catch (error: IllegalStateException) {
+                partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+            }
         }
+
+    private suspend fun <T : Any> withGatedSession(
+        device: UsbDeviceDescriptor,
+        blockedResult: () -> T,
+        openFailureResult: (String) -> T,
+        closeFailureResult: (T) -> T,
+        operation: suspend (RockchipReadOnlySession) -> T,
+    ): T {
+        if (!PROBE_SLOT_RESERVED.compareAndSet(false, true)) return blockedResult()
 
         var transportOpened = false
         val transport = try {
             opener.open(device).also { transportOpened = true }
         } catch (error: SecurityException) {
-            return partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+            return openFailureResult(error.safeMessage())
         } catch (error: IllegalArgumentException) {
-            return partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+            return openFailureResult(error.safeMessage())
         } catch (error: IllegalStateException) {
-            return partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+            return openFailureResult(error.safeMessage())
         } finally {
             if (!transportOpened) PROBE_SLOT_RESERVED.set(false)
         }
 
         val session = RockchipReadOnlySession(transport)
-        var report: RockchipPartitionHeaderProbeReport
         var closeSucceeded = false
-        try {
-            val result = session.readLba(
-                startSector = RockchipPartitionHeaderInspector.START_SECTOR,
-                sectorCount = RockchipPartitionHeaderInspector.SECTOR_COUNT,
-                timeoutMillis = LBA_READ_TIMEOUT_MILLIS,
-            )
-            val inspection = RockchipPartitionHeaderInspector.inspect(result.data)
-            report = RockchipPartitionHeaderProbeReport(
-                transportMethod = transportMethod.displayName,
-                succeeded = true,
-                startSector = inspection.startSector,
-                sectorCount = inspection.sectorCount,
-                bytesRead = inspection.bytesInspected,
-                sha256 = inspection.sha256,
-                hasMbrSignature = inspection.hasMbrSignature,
-                hasGptSignature = inspection.hasGptSignature,
-                detail = "Inspeção fixa dos cabeçalhos MBR/GPT concluída.",
-                requiresReconnect = false,
-            )
-        } catch (timeout: TimeoutCancellationException) {
-            LOGGER.log(Level.WARNING, "Fixed Rockchip partition-header READ_LBA timed out.", timeout)
-            report = partitionHeaderFailureReport(
-                detail = "${transportMethod.displayName}/TIMEOUT: inspeção LBA 0-1 excedeu $LBA_READ_TIMEOUT_MILLIS ms.",
-                requiresReconnect = true,
-            )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: RockchipUsbTransportException) {
-            report = partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
-        } catch (error: IllegalArgumentException) {
-            report = partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
-        } catch (error: IllegalStateException) {
-            report = partitionHeaderFailureReport(error.safeMessage(), requiresReconnect = true)
+        val result = try {
+            operation(session)
         } finally {
             closeSucceeded = closeSessionWithinDeadline(session)
         }
-
-        return if (closeSucceeded) report else report.copy(requiresReconnect = true)
+        return if (closeSucceeded) result else closeFailureResult(result)
     }
 
     private suspend fun closeSessionWithinDeadline(session: RockchipReadOnlySession): Boolean =
