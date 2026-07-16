@@ -142,6 +142,17 @@ class FirmwareLabActivity : ComponentActivity() {
                         item {
                             Button(
                                 onClick = {
+                                    startActivity(
+                                        Intent(this@FirmwareLabActivity, RockchipBackupActivity::class.java),
+                                    )
+                                },
+                            ) {
+                                Text("Criar backup Rockchip local")
+                            }
+                        }
+                        item {
+                            Button(
+                                onClick = {
                                     startActivity(Intent(this@FirmwareLabActivity, MainActivity::class.java))
                                 },
                             ) {
