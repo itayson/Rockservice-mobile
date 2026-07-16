@@ -21,13 +21,9 @@ internal data class UsbHostDeviceSnapshot(
 
 internal interface UsbHostPlatform {
     suspend fun listDevices(): List<UsbHostDeviceSnapshot>
-
     suspend fun inspectTopology(transportId: String): UsbDeviceTopology
-
     suspend fun requestPermission(transportId: String): Boolean
-
     suspend fun readRawDescriptors(transportId: String): ByteArray
-
     suspend fun close()
 }
 
@@ -70,6 +66,36 @@ class AndroidUsbHostBackend internal constructor(
     }
 
     /**
+     * Explicitly requests Android USB permission for a freshly enumerated target and revalidates the
+     * target identity after the asynchronous permission result before reporting success.
+     */
+    suspend fun requestPermission(
+        device: UsbDeviceDescriptor,
+        timeoutMillis: Long = UsbBackend.DEFAULT_TIMEOUT_MILLIS,
+    ): UsbDeviceDescriptor = runOperation(timeoutMillis) {
+        val transportId = requireNotNull(device.transportId) {
+            "Android USB Host permission requests require a transportId from a fresh enumeration."
+        }
+        val attached = findAttachedTarget(transportId)
+        require(matchesIdentity(device, attached)) {
+            "USB target identity changed before permission request."
+        }
+
+        val permitted = attached.hasPermission || platform.requestPermission(transportId)
+        check(permitted) { "USB permission was denied for the selected device." }
+        currentCoroutineContext().ensureActive()
+
+        val revalidated = findAttachedTarget(transportId)
+        require(matchesIdentity(device, revalidated)) {
+            "USB target identity changed after permission was granted."
+        }
+        check(revalidated.hasPermission) {
+            "Android reported permission success but the selected USB target is not permitted."
+        }
+        revalidated.toDescriptor()
+    }
+
+    /**
      * Reads a bounded slice of the USB device's raw descriptor bytes.
      *
      * This is intentionally not a storage, NAND, eMMC, endpoint, or Rockchip protocol read. The
@@ -84,23 +110,8 @@ class AndroidUsbHostBackend internal constructor(
     ): ByteArray = runOperation(timeoutMillis) {
         validateReadRange(offset, length)
 
-        val transportId = requireNotNull(device.transportId) {
-            "Android USB Host reads require a transportId from a fresh enumeration."
-        }
-        val attached = findAttachedTarget(transportId)
-        require(matchesIdentity(device, attached)) {
-            "USB target identity changed after enumeration."
-        }
-
-        val permitted = attached.hasPermission || platform.requestPermission(transportId)
-        check(permitted) { "USB permission was denied for the selected device." }
-        currentCoroutineContext().ensureActive()
-
-        val revalidated = findAttachedTarget(transportId)
-        require(matchesIdentity(device, revalidated)) {
-            "USB target identity changed before connection opening."
-        }
-
+        val permittedDevice = requestPermissionInternal(device)
+        val transportId = requireNotNull(permittedDevice.transportId)
         val descriptors = platform.readRawDescriptors(transportId)
         if (offset >= descriptors.size.toLong() || length == 0) {
             return@runOperation ByteArray(0)
@@ -115,6 +126,24 @@ class AndroidUsbHostBackend internal constructor(
         if (closed.compareAndSet(false, true)) {
             platform.close()
         }
+    }
+
+    private suspend fun requestPermissionInternal(device: UsbDeviceDescriptor): UsbDeviceDescriptor {
+        val transportId = requireNotNull(device.transportId) {
+            "Android USB Host reads require a transportId from a fresh enumeration."
+        }
+        val attached = findAttachedTarget(transportId)
+        require(matchesIdentity(device, attached)) {
+            "USB target identity changed after enumeration."
+        }
+        val permitted = attached.hasPermission || platform.requestPermission(transportId)
+        check(permitted) { "USB permission was denied for the selected device." }
+        currentCoroutineContext().ensureActive()
+        val revalidated = findAttachedTarget(transportId)
+        require(matchesIdentity(device, revalidated)) {
+            "USB target identity changed before connection opening."
+        }
+        return revalidated.toDescriptor()
     }
 
     private suspend fun findAttachedTarget(transportId: String): UsbHostDeviceSnapshot =
