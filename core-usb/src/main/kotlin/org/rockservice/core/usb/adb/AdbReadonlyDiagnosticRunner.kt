@@ -108,9 +108,7 @@ class AdbReadonlyDiagnosticRunner internal constructor(
             peerBanner = peer.banner,
             sections = sections,
             retainedByteCount = maximumTotalBytes - remainingBudget,
-            budgetExhausted = remainingBudget == 0 && requested.size > sections.count {
-                it.status != AdbDiagnosticSectionStatus.SKIPPED_BUDGET
-            },
+            budgetExhausted = remainingBudget == 0,
         )
     }
 
@@ -183,7 +181,7 @@ class AdbReadonlyDiagnosticRunner internal constructor(
         } catch (cancelled: CancellationException) {
             safeClose(stream)
             throw cancelled
-        } catch (error: Throwable) {
+        } catch (error: Exception) {
             safeClose(stream)
             AdbDiagnosticSection(
                 service = service,
@@ -201,7 +199,7 @@ class AdbReadonlyDiagnosticRunner internal constructor(
         withContext(NonCancellable) {
             try {
                 stream.close(CLEANUP_CLOSE_TIMEOUT_MILLIS)
-            } catch (_: Throwable) {
+            } catch (_: Exception) {
                 // Best-effort cleanup: the session controller remains responsible for terminal state.
             }
         }
