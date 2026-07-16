@@ -88,7 +88,7 @@ Entregue:
 - `READ_LBA` limitado localmente a no máximo 32 setores por transação;
 - prova física e interface controlada para leitura fixa de exatamente 1 setor no LBA 0;
 - proteção contra resultados obsoletos, leituras concorrentes e repetição após falha que exige reconexão;
-- plano e parser puro preparatórios para inspeção fixa de LBA 0–1 e detecção sanitizada de assinaturas MBR/GPT, rastreados em `#35`.
+- plano preparatório e parser puro para inspeção fixa de LBA 0–1 e detecção sanitizada de assinaturas MBR/GPT, rastreados em `#35`.
 
 Próximos gates:
 
