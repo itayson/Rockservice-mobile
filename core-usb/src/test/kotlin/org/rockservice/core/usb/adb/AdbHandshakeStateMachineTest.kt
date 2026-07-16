@@ -2,6 +2,7 @@ package org.rockservice.core.usb.adb
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -9,7 +10,7 @@ import org.junit.Test
 
 class AdbHandshakeStateMachineTest {
     @Test
-    fun `start emits one CNXN and direct peer CNXN completes handshake`() {
+    fun `start emits modern CNXN and direct peer CNXN completes handshake`() {
         val identity = FakeIdentity()
         val machine = AdbHandshakeStateMachine(identity)
 
@@ -18,12 +19,52 @@ class AdbHandshakeStateMachineTest {
 
         assertEquals(AdbCommand.CNXN, start.outbound?.command)
         assertEquals(AdbHandshakeState.AwaitingConnectionOrAuth, start.state)
+        assertArrayEquals(
+            "host::features=shell_v2,cmd;".toByteArray(),
+            start.outbound?.payload,
+        )
+        assertNotEquals(0, start.outbound?.payload?.last()?.toInt())
         assertTrue(connected.state is AdbHandshakeState.Connected)
         assertNull(connected.outbound)
         val peer = (connected.state as AdbHandshakeState.Connected).peer
         assertEquals("device::ro.product.name=test;", peer.banner)
         assertEquals(4096L, peer.maxDataBytes)
+        assertEquals(0x01000001L, peer.protocolVersion)
         assertEquals(0, identity.signCalls)
+    }
+
+    @Test
+    fun `accepts one legacy trailing NUL in peer CNXN banner`() {
+        val machine = AdbHandshakeStateMachine(FakeIdentity())
+        machine.start()
+
+        val result = machine.receive(
+            peerConnection(payload = "device::legacy;\u0000".toByteArray()),
+        )
+
+        val peer = (result.state as AdbHandshakeState.Connected).peer
+        assertEquals("device::legacy;", peer.banner)
+    }
+
+    @Test
+    fun `negotiates future peer protocol and maxdata down to local ceilings`() {
+        val machine = AdbHandshakeStateMachine(
+            identity = FakeIdentity(),
+            protocolVersion = 0x01000001,
+            maxDataBytes = 4096,
+        )
+        machine.start()
+
+        val result = machine.receive(
+            peerConnection(
+                protocolVersion = 0x01000002,
+                maxDataBytes = 2L * 1024L * 1024L,
+            ),
+        )
+
+        val peer = (result.state as AdbHandshakeState.Connected).peer
+        assertEquals(0x01000001L, peer.protocolVersion)
+        assertEquals(4096L, peer.maxDataBytes)
     }
 
     @Test
@@ -85,40 +126,88 @@ class AdbHandshakeStateMachineTest {
     }
 
     @Test
-    fun `rejects malformed auth token before invoking identity`() {
+    fun `malformed auth token becomes terminal failure before invoking identity`() {
         val identity = FakeIdentity()
         val machine = AdbHandshakeStateMachine(identity)
         machine.start()
 
-        expectIllegalArgument {
-            machine.receive(
-                AdbMessage(
-                    command = AdbCommand.AUTH,
-                    arg0 = AdbAuthType.TOKEN.wireValue,
-                    arg1 = 0,
-                    payload = ByteArray(19),
-                ),
-            )
-        }
+        val result = machine.receive(
+            AdbMessage(
+                command = AdbCommand.AUTH,
+                arg0 = AdbAuthType.TOKEN.wireValue,
+                arg1 = 0,
+                payload = ByteArray(19),
+            ),
+        )
 
+        assertTrue(result.state is AdbHandshakeState.Failed)
         assertEquals(0, identity.signCalls)
+        expectIllegalArgument { machine.receive(peerConnection()) }
     }
 
     @Test
-    fun `rejects malformed peer connection fields`() {
+    fun `unsupported peer version becomes terminal failure`() {
         val machine = AdbHandshakeStateMachine(FakeIdentity())
         machine.start()
 
-        expectIllegalArgument {
-            machine.receive(
-                AdbMessage(
-                    command = AdbCommand.CNXN,
-                    arg0 = 0x01000001,
-                    arg1 = 4096,
-                    payload = "device::missing-nul".toByteArray(),
-                ),
-            )
-        }
+        val result = machine.receive(peerConnection(protocolVersion = 0x00FF_FFFF))
+
+        assertTrue(result.state is AdbHandshakeState.Failed)
+        assertTrue((result.state as AdbHandshakeState.Failed).reason.contains("Versão ADB remota"))
+    }
+
+    @Test
+    fun `peer CNXN with internal NUL becomes terminal failure`() {
+        val machine = AdbHandshakeStateMachine(FakeIdentity())
+        machine.start()
+
+        val result = machine.receive(
+            peerConnection(payload = "device::bad\u0000banner".toByteArray()),
+        )
+
+        assertTrue(result.state is AdbHandshakeState.Failed)
+        assertTrue((result.state as AdbHandshakeState.Failed).reason.contains("NUL interno"))
+    }
+
+    @Test
+    fun `peer CNXN with invalid UTF8 becomes terminal failure`() {
+        val machine = AdbHandshakeStateMachine(FakeIdentity())
+        machine.start()
+
+        val result = machine.receive(
+            peerConnection(payload = byteArrayOf(0xC3.toByte(), 0x28)),
+        )
+
+        assertTrue(result.state is AdbHandshakeState.Failed)
+        assertTrue((result.state as AdbHandshakeState.Failed).reason.contains("UTF-8"))
+    }
+
+    @Test
+    fun `identity signing failure becomes terminal handshake failure`() {
+        val machine = AdbHandshakeStateMachine(
+            object : AdbHandshakeIdentity {
+                override fun signToken(token: ByteArray): ByteArray = error("key unavailable")
+                override fun publicKeyRecord(): String = "AAAA unused"
+            },
+        )
+        machine.start()
+
+        val result = machine.receive(authToken(ByteArray(20)))
+
+        assertTrue(result.state is AdbHandshakeState.Failed)
+        assertTrue((result.state as AdbHandshakeState.Failed).reason.contains("key unavailable"))
+    }
+
+    @Test
+    fun `failed start validation leaves machine idle`() {
+        val machine = AdbHandshakeStateMachine(
+            identity = FakeIdentity(),
+            maxDataBytes = 0,
+        )
+
+        expectIllegalArgument { machine.start() }
+
+        assertEquals(AdbHandshakeState.Idle, machine.state)
     }
 
     @Test
@@ -130,11 +219,15 @@ class AdbHandshakeStateMachineTest {
         expectIllegalArgument { machine.start() }
     }
 
-    private fun peerConnection(): AdbMessage = AdbMessage(
+    private fun peerConnection(
+        protocolVersion: Long = 0x01000001,
+        maxDataBytes: Long = 4096,
+        payload: ByteArray = "device::ro.product.name=test;".toByteArray(),
+    ): AdbMessage = AdbMessage(
         command = AdbCommand.CNXN,
-        arg0 = 0x01000001,
-        arg1 = 4096,
-        payload = "device::ro.product.name=test;\u0000".toByteArray(),
+        arg0 = protocolVersion,
+        arg1 = maxDataBytes,
+        payload = payload,
     )
 
     private fun authToken(token: ByteArray): AdbMessage = AdbMessage(
