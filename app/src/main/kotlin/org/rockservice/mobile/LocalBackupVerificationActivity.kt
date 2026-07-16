@@ -47,7 +47,8 @@ class LocalBackupVerificationActivity : ComponentActivity() {
 @Composable
 private fun LocalBackupVerificationScreen(viewModel: LocalBackupVerificationViewModel) {
     val state by viewModel.state.collectAsState()
-    val resolver = LocalContext.current.contentResolver
+    val context = LocalContext.current
+    val resolver = context.contentResolver
     var selectedUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var startSectorText by rememberSaveable { mutableStateOf("0") }
     var sectorCountText by rememberSaveable { mutableStateOf("") }
@@ -94,6 +95,7 @@ private fun LocalBackupVerificationScreen(viewModel: LocalBackupVerificationView
             sectorCountText = sectorCountText,
             sha256Text = sha256Text,
             running = state.running,
+            verificationPassed = state.verificationPassed,
             manifestLoading = state.manifestLoading,
             manifestMessage = state.manifestMessage,
             resultMessage = state.resultMessage,
@@ -123,6 +125,12 @@ private fun LocalBackupVerificationScreen(viewModel: LocalBackupVerificationView
                     )
                 }
             },
+            onOpenFirmwareLab = {
+                val uri = selectedUri
+                if (uri != null && state.verificationPassed) {
+                    context.startActivity(FirmwareLabActivity.createIntent(context, uri))
+                }
+            },
         )
     }
 }
@@ -135,6 +143,7 @@ private fun LocalBackupVerificationForm(
     sectorCountText: String,
     sha256Text: String,
     running: Boolean,
+    verificationPassed: Boolean,
     manifestLoading: Boolean,
     manifestMessage: String?,
     resultMessage: String?,
@@ -144,6 +153,7 @@ private fun LocalBackupVerificationForm(
     onSectorCountChange: (String) -> Unit,
     onSha256Change: (String) -> Unit,
     onVerify: () -> Unit,
+    onOpenFirmwareLab: () -> Unit,
 ) {
     val busy = running || manifestLoading
     LazyColumn(
@@ -209,5 +219,16 @@ private fun LocalBackupVerificationForm(
         }
         if (running) item { CircularProgressIndicator() }
         resultMessage?.let { message -> item { Text(message) } }
+        if (verificationPassed && selectedUri != null) {
+            item {
+                Button(
+                    onClick = onOpenFirmwareLab,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Analisar arquivo verificado no Firmware Lab")
+                }
+            }
+        }
     }
 }
