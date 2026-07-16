@@ -129,46 +129,29 @@ class FirmwareLabActivity : ComponentActivity() {
                             )
                         }
                         item {
-                            Button(
-                                onClick = {
-                                    startActivity(
-                                        Intent(this@FirmwareLabActivity, HardwareValidationActivity::class.java),
-                                    )
-                                },
-                            ) {
-                                Text("Validar hardware Rockchip por OTG")
-                            }
+                            Button(onClick = {
+                                startActivity(Intent(this@FirmwareLabActivity, HardwareValidationActivity::class.java))
+                            }) { Text("Validar hardware Rockchip por OTG") }
                         }
                         item {
-                            Button(
-                                onClick = {
-                                    startActivity(
-                                        Intent(this@FirmwareLabActivity, RockchipBackupActivity::class.java),
-                                    )
-                                },
-                            ) {
-                                Text("Criar backup Rockchip local")
-                            }
+                            Button(onClick = {
+                                startActivity(Intent(this@FirmwareLabActivity, RockchipBackupActivity::class.java))
+                            }) { Text("Criar backup Rockchip local") }
                         }
                         item {
-                            Button(
-                                onClick = {
-                                    startActivity(Intent(this@FirmwareLabActivity, MainActivity::class.java))
-                                },
-                            ) {
-                                Text("Abrir diagnóstico de dispositivos")
-                            }
+                            Button(onClick = {
+                                startActivity(Intent(this@FirmwareLabActivity, LocalBackupVerificationActivity::class.java))
+                            }) { Text("Verificar integridade de backup local") }
                         }
                         item {
-                            Button(
-                                onClick = {
-                                    startActivity(
-                                        Intent(this@FirmwareLabActivity, DiagnosticsLogActivity::class.java),
-                                    )
-                                },
-                            ) {
-                                Text("Abrir log técnico sanitizado")
-                            }
+                            Button(onClick = {
+                                startActivity(Intent(this@FirmwareLabActivity, MainActivity::class.java))
+                            }) { Text("Abrir diagnóstico de dispositivos") }
+                        }
+                        item {
+                            Button(onClick = {
+                                startActivity(Intent(this@FirmwareLabActivity, DiagnosticsLogActivity::class.java))
+                            }) { Text("Abrir log técnico sanitizado") }
                         }
                     }
                 }
