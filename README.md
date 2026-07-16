@@ -1,6 +1,8 @@
 # RockService Mobile
 
-Aplicativo Android open source para diagnóstico, análise e transformação controlada de firmware, validação USB/ADB e manutenção **autorizada** de equipamentos, com foco atual em Rockchip e fluxos Android.
+Aplicativo Android open source para diagnóstico, análise e transformação controlada de firmware e manutenção **autorizada** de equipamentos Rockchip, projetado para operar **100% offline em runtime**.
+
+O aplicativo não depende de ADB, internet, APIs remotas, telemetria ou serviços externos. As entradas de dados permitidas são dispositivos físicos conectados por USB/OTG, arquivos escolhidos explicitamente pelo usuário via Storage Access Framework e recursos estáticos empacotados no APK.
 
 ## Estado atual — 0.2.0-alpha01
 
@@ -39,18 +41,19 @@ Implementado:
 
 A expansão para leituras físicas maiores continua bloqueada pelos gates de hardware `#18` e `#35`.
 
-### ADB
+### Runtime totalmente offline
 
-Implementado:
+A arquitetura do produto estabelece:
 
-- codec defensivo do protocolo ADB para `SYNC`, `CNXN`, `AUTH`, `OPEN`, `OKAY`, `CLSE` e `WRTE`;
-- framing de 24 bytes, magic, checksum legado, uint32 e limites de payload;
-- identidade RSA 2048 compatível com `AUTH`, incluindo registro público ADB e assinatura do token;
-- máquina de estados fail-closed para `CNXN/AUTH`;
-- transporte Android USB de frames ADB com perfil de interface e endpoints Bulk validados;
-- tela de validação explícita de conexão/autorização ADB por USB;
-- identidade ADB persistida somente no armazenamento privado `noBackupFilesDir` do aplicativo;
-- nenhum shell ou serviço remoto aberto automaticamente pelo fluxo de validação.
+- nenhuma permissão `INTERNET` no manifesto de produção;
+- nenhuma permissão `ACCESS_NETWORK_STATE` ou equivalente necessária ao runtime;
+- nenhuma dependência de ADB ou ADB Sync;
+- nenhuma API HTTP, WebSocket, SSH, FTP, WebView remoto ou cliente de rede no runtime;
+- nenhum download automático de firmware, loader ou configuração;
+- análise, backup, restauração e transformação executados localmente;
+- política de CI que falha quando permissões ou bibliotecas de rede proibidas são reintroduzidas.
+
+A política completa está documentada em `docs/OFFLINE_ARCHITECTURE.md`.
 
 ## Limites deliberados
 
@@ -59,10 +62,9 @@ Ainda não são considerados concluídos ou habilitados:
 - matriz ampla de compatibilidade física Rockchip (`#18`);
 - validação física final da inspeção fixa LBA 0–1 (`#35`);
 - backup físico genérico de NAND, SPI NAND, eMMC ou partições Rockchip;
-- gravação, erase, reset, download automático de loader ou operações destrutivas;
+- gravação, erase, reset ou operações destrutivas;
 - Loader/Maskrom genérico sem combinação de hardware/loader explicitamente validada;
-- execução arbitrária de comandos root recebidos da internet;
-- shell ADB arbitrário na interface padrão;
+- carregamento automático de firmware ou loader a partir da internet;
 - extração direta de partições lógicas de um `super.img` ainda sparse sem expansão explícita para RAW;
 - release de produção assinada até os secrets/keystore e gates administrativos de `#20` estarem configurados.
 
@@ -73,12 +75,13 @@ O APK de debug pode ser compilado e instalado para uso e validação. Ele é ass
 - nenhuma operação de firmware é iniciada automaticamente ao selecionar um arquivo;
 - transformações e exportações exigem destino escolhido explicitamente;
 - resultados antigos são invalidados quando a origem ou o alvo muda;
-- logs sanitizados não armazenam URIs de documentos nem material criptográfico ADB;
-- a chave privada ADB fica no armazenamento privado não incluído em backup do aplicativo;
+- logs sanitizados não armazenam URIs de documentos ou conteúdo integral de firmware;
 - broadcasts USB apenas disparam nova enumeração; dados de broadcast não autorizam um alvo;
 - operações Rockchip de escrita permanecem ausentes/desativadas por padrão;
 - o build mantém `REAL_USB_WRITE_ENABLED=false` tanto em debug quanto em release;
-- compatibilidade de firmware nunca é inferida apenas por uma assinatura estrutural.
+- compatibilidade de firmware nunca é inferida apenas por uma assinatura estrutural;
+- o runtime não possui canal de rede para transmitir diagnósticos, firmware ou identificadores;
+- o gate `scripts/verify-offline-runtime.sh` protege a política offline no CI.
 
 ## Compilação
 
@@ -88,7 +91,7 @@ Requisitos: JDK 17, Android SDK 36, CMake 3.22.1 e NDK configurado.
 ./gradlew --no-daemon test :app:assembleDebug lint
 ```
 
-O CI também executa CodeQL, Gitleaks e gates de supply chain. O Gradle Wrapper 8.13 é versionado com verificações de integridade.
+O CI também executa a verificação de runtime offline, CodeQL, Gitleaks e gates de supply chain. O Gradle Wrapper 8.13 é versionado com verificações de integridade.
 
 ## Cadeia de release
 
@@ -96,6 +99,7 @@ A infraestrutura de build de release exige assinatura real, valida o APK com `ap
 
 ## Documentação principal
 
+- `docs/OFFLINE_ARCHITECTURE.md`
 - `docs/ARCHITECTURE.md`
 - `docs/FIRMWARE_LAB.md`
 - `docs/ANDROID_USB_HOST.md`

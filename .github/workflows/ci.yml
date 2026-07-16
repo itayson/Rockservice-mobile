@@ -43,6 +43,11 @@ jobs:
           chmod +x gradlew
           ./gradlew --version
 
+      - name: Verify offline runtime policy
+        run: |
+          chmod +x scripts/verify-offline-runtime.sh
+          scripts/verify-offline-runtime.sh
+
       - name: Test, build and lint
         shell: bash
         run: |

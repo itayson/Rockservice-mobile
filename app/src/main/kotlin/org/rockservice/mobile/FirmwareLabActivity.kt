@@ -39,7 +39,7 @@ class FirmwareLabActivity : ComponentActivity() {
             severity = DiagnosticSeverity.INFO,
             component = "app",
             action = "launcher.open",
-            message = "Tela inicial do laboratório de firmware aberta.",
+            message = "Tela inicial do laboratório de firmware aberta em modo totalmente offline.",
         )
 
         setContent {
@@ -70,7 +70,7 @@ class FirmwareLabActivity : ComponentActivity() {
                     topBar = {
                         Surface(tonalElevation = 2.dp) {
                             Text(
-                                "RockService Mobile",
+                                "RockService Mobile — Offline",
                                 modifier = Modifier.padding(16.dp),
                                 style = MaterialTheme.typography.titleLarge,
                             )
@@ -123,6 +123,12 @@ class FirmwareLabActivity : ComponentActivity() {
                             )
                         }
                         item {
+                            Text(
+                                "Este aplicativo opera sem ADB e sem acesso de rede. As operações usam apenas arquivos locais, armazenamento escolhido pelo usuário e dispositivos conectados fisicamente por USB/OTG.",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        item {
                             Button(
                                 onClick = {
                                     startActivity(
@@ -136,19 +142,10 @@ class FirmwareLabActivity : ComponentActivity() {
                         item {
                             Button(
                                 onClick = {
-                                    startActivity(Intent(this@FirmwareLabActivity, AdbProbeActivity::class.java))
-                                },
-                            ) {
-                                Text("Validar conexao ADB por USB")
-                            }
-                        }
-                        item {
-                            Button(
-                                onClick = {
                                     startActivity(Intent(this@FirmwareLabActivity, MainActivity::class.java))
                                 },
                             ) {
-                                Text("Abrir diagnostico de dispositivos")
+                                Text("Abrir diagnóstico de dispositivos")
                             }
                         }
                         item {

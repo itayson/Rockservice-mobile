@@ -29,7 +29,7 @@ Entregue:
 - invalidação de jobs e resultados obsoletos ao trocar alvo/origem;
 - log técnico estruturado, sanitizado e limitado em memória;
 - tela de consulta, limpeza e exportação manual em JSONL sem permissão ampla de armazenamento;
-- integração de eventos técnicos nos fluxos principais de firmware, Rockchip e ADB.
+- integração de eventos técnicos nos fluxos principais de firmware e Rockchip.
 
 Pendente apenas quando surgir requisito concreto:
 
@@ -66,28 +66,34 @@ Próximas evoluções:
 2. aprofundar parsers de filesystems somente quando houver caso de uso de leitura segura de arquivos internos;
 3. implementar empacotamento/reempacotamento apenas com formato de saída claramente definido, validação round-trip e nenhum destino implícito.
 
-## Fase 3 — ADB e diagnóstico
+## Fase 3 — Runtime offline e diagnóstico local
 
-**Estado: transporte, autenticação e probe de conexão implementados; serviços remotos permanecem bloqueados por allowlist futura.**
+**Estado: migração em andamento.**
 
-Entregue:
+Direção oficial:
 
-- codec defensivo `SYNC/CNXN/AUTH/OPEN/OKAY/CLSE/WRTE`;
-- framing, magic, checksum legado, uint32 e limites de payload;
-- identidade RSA 2048 compatível com ADB AUTH;
-- máquina de estados fail-closed para `CNXN/AUTH`;
-- transporte Android USB de frames ADB com alvo e topologia revalidados;
-- solicitação explícita de permissão USB com revalidação após o resultado;
-- identidade ADB persistida no armazenamento privado `noBackupFilesDir` do aplicativo;
-- tela de validação de conexão/autorização ADB que não abre shell nem serviço remoto automaticamente.
+- remover completamente ADB, ADB Sync e autenticação ADB do produto;
+- não declarar `INTERNET`, `ACCESS_NETWORK_STATE` ou permissões equivalentes no runtime;
+- não depender de HTTP, WebSocket, SSH, FTP, WebView remoto ou APIs externas;
+- usar apenas USB/OTG, arquivos selecionados via SAF e recursos estáticos empacotados;
+- manter logs, relatórios, hashes e análises exclusivamente locais;
+- falhar no CI se permissões ou bibliotecas de rede proibidas forem reintroduzidas.
+
+Entregue nesta migração:
+
+- remoção da superfície ADB da UI e do manifesto;
+- encerramento da linha de desenvolvimento ADB Sync sem merge;
+- remoção do núcleo de sessão, protocolo, handshake, diagnóstico e transporte USB ADB;
+- remoção/aposentadoria da suíte de testes exclusiva de ADB;
+- documentação `docs/OFFLINE_ARCHITECTURE.md`;
+- gate `scripts/verify-offline-runtime.sh` integrado ao CI.
 
 Próximos gates:
 
-1. validar o probe em diferentes dispositivos Android autorizados e versões de adbd;
-2. implementar uma camada de streams ADB testável para `OPEN/OKAY/WRTE/CLSE`;
-3. expor apenas serviços diagnósticos explicitamente allowlisted;
-4. adicionar coleta sanitizada de propriedades/saúde/logs sem permitir comando arbitrário pela UI padrão;
-5. manter ações mutáveis separadas e sujeitas a confirmação explícita.
+1. concluir a remoção de referências documentais e marcadores históricos ADB;
+2. validar o APK e o grafo Gradle sem dependências de rede;
+3. manter a política offline como requisito de release;
+4. concentrar novos diagnósticos em USB/OTG Rockchip, arquivos locais e evidências coletadas localmente.
 
 ## Fase 4 — Rockchip somente leitura
 
@@ -119,7 +125,19 @@ Próximos gates:
 3. somente depois ampliar leituras físicas com faixas derivadas de metadata validada, política de destino e verificação de integridade;
 4. manter backup físico genérico bloqueado até existirem retomada segura, limites testados e evidência de hardware para cada classe suportada.
 
-## Fase 5 — Gravação experimental
+## Fase 5 — Backup e restauração locais
+
+**Estado: planejada após os gates read-only da Fase 4.**
+
+Prioridades:
+
+- backup físico streaming para destino SAF explicitamente selecionado;
+- SHA-256 durante a leitura e verificação pós-operação;
+- identificação inequívoca do alvo e da região lida;
+- suporte incremental a partições, eMMC, NAND e SPI NAND conforme evidência física;
+- restauração somente após validação de compatibilidade e confirmação explícita.
+
+## Fase 6 — Gravação experimental
 
 **Estado: bloqueada.**
 
@@ -136,23 +154,25 @@ A escrita só poderá ser introduzida após todos os seguintes gates:
 - plano de recuperação documentado e testado;
 - releitura e verificação de integridade após a gravação.
 
-## Fase 6 — Recuperação avançada
+## Fase 7 — Recuperação avançada
 
-**Estado: bloqueada até a maturidade das fases 4 e 5.**
+**Estado: bloqueada até a maturidade das fases 4, 5 e 6.**
 
-Loader/Maskrom, se forem técnica e legalmente viáveis, devem usar apenas loaders fornecidos ou autorizados pelo usuário. Antes de qualquer envio ao hardware, o artefato deve ter:
+Loader/Maskrom, se forem técnica e legalmente viáveis, devem usar apenas loaders fornecidos ou autorizados pelo usuário e disponíveis localmente. O aplicativo não fará download automático desses artefatos.
 
-- hash ou assinatura verificados contra uma origem confiável;
+Antes de qualquer envio ao hardware, o artefato deve ter:
+
+- hash ou assinatura verificados contra metadados confiáveis disponíveis localmente;
 - proveniência registrada;
 - matriz explícita de compatibilidade entre loader, SoC, placa e modo de recuperação;
 - validação prévia do artefato e do alvo selecionado;
 - evidência de teste em hardware autorizado para a combinação suportada.
 
-## Fase 7 — Plugins e programadores externos
+## Fase 8 — Plugins e programadores externos
 
 **Estado: futuro.**
 
-API de plugins, USB/serial e documentação para fabricantes continuam fora do corte `0.2.0-alpha01`.
+API de plugins estritamente locais, USB/serial e documentação para fabricantes continuam fora do corte `0.2.0-alpha01`. Plugins remotos ou baixados automaticamente não fazem parte da arquitetura offline.
 
 ## Release
 
