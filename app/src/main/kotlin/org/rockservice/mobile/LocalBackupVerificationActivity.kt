@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 
@@ -45,6 +46,7 @@ class LocalBackupVerificationActivity : ComponentActivity() {
 @Composable
 private fun LocalBackupVerificationScreen(viewModel: LocalBackupVerificationViewModel) {
     val state by viewModel.state.collectAsState()
+    val resolver = LocalContext.current.contentResolver
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var startSectorText by remember { mutableStateOf("0") }
     var sectorCountText by remember { mutableStateOf("") }
@@ -80,14 +82,16 @@ private fun LocalBackupVerificationScreen(viewModel: LocalBackupVerificationView
             onSectorCountChange = { sectorCountText = it.filter(Char::isDigit) },
             onSha256Change = { sha256Text = it.trim().lowercase().take(64) },
             onVerify = {
-                val uri = selectedUri ?: return@LocalBackupVerificationForm
-                viewModel.verify(
-                    resolver = (viewModel as? Any)?.let { null } ?: throw IllegalStateException(),
-                    uri = uri,
-                    startSectorText = startSectorText,
-                    sectorCountText = sectorCountText,
-                    sha256Text = sha256Text,
-                )
+                val uri = selectedUri
+                if (uri != null) {
+                    viewModel.verify(
+                        resolver = resolver,
+                        uri = uri,
+                        startSectorText = startSectorText,
+                        sectorCountText = sectorCountText,
+                        sha256Text = sha256Text,
+                    )
+                }
             },
         )
     }
