@@ -24,9 +24,12 @@ import org.rockservice.core.usb.AndroidUsbHostBackend
 import org.rockservice.core.usb.UsbDeviceDescriptor
 import org.rockservice.core.usb.UsbEndpointDirection
 import org.rockservice.core.usb.UsbTransferType
+import org.rockservice.core.usb.adb.AdbDiagnosticSnapshot
 import org.rockservice.core.usb.adb.AdbHandshakeState
 import org.rockservice.core.usb.adb.AdbHandshakeStateMachine
 import org.rockservice.core.usb.adb.AdbMessageTransport
+import org.rockservice.core.usb.adb.AdbReadonlyDiagnosticRunner
+import org.rockservice.core.usb.adb.AdbSessionController
 import org.rockservice.core.usb.adb.AdbUsbInterfaceProfile
 import org.rockservice.core.usb.adb.AndroidAdbUsbTransportFactory
 
@@ -63,12 +66,23 @@ internal sealed interface AdbProbeOperationState {
     ) : AdbProbeOperationState
 }
 
+internal sealed interface AdbProbeDiagnosticsState {
+    data object Idle : AdbProbeDiagnosticsState
+    data object Running : AdbProbeDiagnosticsState
+    data class Ready(val snapshot: AdbDiagnosticSnapshot) : AdbProbeDiagnosticsState
+    data class Error(val message: String) : AdbProbeDiagnosticsState
+}
+
 internal data class AdbProbeScreenState(
     val scan: AdbProbeScanState = AdbProbeScanState.Loading,
     val operation: AdbProbeOperationState = AdbProbeOperationState.Idle,
+    val diagnostics: AdbProbeDiagnosticsState = AdbProbeDiagnosticsState.Idle,
 )
 
-/** Enumerates canonical ADB USB targets and performs only the CNXN/AUTH handshake. */
+/**
+ * Enumerates canonical ADB USB targets, performs CNXN/AUTH, and retains an authenticated session
+ * only after explicit user initiation. Diagnostic services are opened only by [collectDiagnostics].
+ */
 internal class AdbProbeViewModel(
     private val appContext: Context,
     private val diagnosticsRecorder: DiagnosticEventRecorder = AppDiagnostics.recorder,
@@ -79,12 +93,16 @@ internal class AdbProbeViewModel(
     private val mutableState = MutableStateFlow(AdbProbeScreenState())
     private val operationGeneration = AtomicLong(0L)
     private val started = AtomicBoolean(false)
-    private val transportLock = Any()
+    private val connectionLock = Any()
     private var scanJob: Job? = null
     private var probeJob: Job? = null
+    private var diagnosticsJob: Job? = null
 
     @Volatile
     private var activeTransport: AdbMessageTransport? = null
+
+    @Volatile
+    private var activeSession: AdbSessionController? = null
 
     val state = mutableState.asStateFlow()
 
@@ -96,11 +114,12 @@ internal class AdbProbeViewModel(
     fun refresh() {
         val generation = operationGeneration.incrementAndGet()
         probeJob?.cancel()
+        diagnosticsJob?.cancel()
         scanJob?.cancel()
         mutableState.value = AdbProbeScreenState(scan = AdbProbeScanState.Loading)
 
         scanJob = viewModelScope.launch(Dispatchers.IO) {
-            closeActiveTransport()
+            closeActiveConnection()
             try {
                 val candidates = usbBackend.listDevices()
                     .mapNotNull { descriptor ->
@@ -136,16 +155,18 @@ internal class AdbProbeViewModel(
     fun probe(candidate: AdbProbeCandidate) {
         val generation = operationGeneration.incrementAndGet()
         probeJob?.cancel()
+        diagnosticsJob?.cancel()
         val transportId = requireNotNull(candidate.descriptor.transportId)
         mutableState.value = mutableState.value.copy(
             operation = AdbProbeOperationState.Running(
                 transportId = transportId,
                 stage = "Solicitando permissao USB e revalidando o alvo...",
             ),
+            diagnostics = AdbProbeDiagnosticsState.Idle,
         )
 
         probeJob = viewModelScope.launch(Dispatchers.IO) {
-            closeActiveTransport()
+            closeActiveConnection()
             var authorizationMayBePending = false
             var ownedTransport: AdbMessageTransport? = null
             try {
@@ -175,26 +196,42 @@ internal class AdbProbeViewModel(
                         val transition = machine.receive(incoming)
                         when (val handshakeState = transition.state) {
                             is AdbHandshakeState.Connected -> {
-                                if (operationGeneration.get() == generation) {
-                                    mutableState.value = mutableState.value.copy(
-                                        operation = AdbProbeOperationState.Connected(
-                                            transportId = transportId,
-                                            protocolVersion = handshakeState.peer.protocolVersion,
-                                            maxDataBytes = handshakeState.peer.maxDataBytes,
-                                            banner = handshakeState.peer.banner,
-                                        ),
-                                    )
-                                    diagnosticsRecorder.record(
-                                        severity = DiagnosticSeverity.INFO,
-                                        component = "adb",
-                                        action = "handshake.connected",
-                                        message = "Handshake ADB concluido sem abertura de servico.",
-                                        metadata = mapOf(
-                                            "protocolVersion" to handshakeState.peer.protocolVersion.toString(),
-                                            "maxDataBytes" to handshakeState.peer.maxDataBytes.toString(),
-                                        ),
-                                    )
+                                if (operationGeneration.get() != generation) {
+                                    throw CancellationException("A operacao ADB foi substituida antes da sessao ser promovida.")
                                 }
+
+                                val session = AdbSessionController(
+                                    transport = transport,
+                                    peer = handshakeState.peer,
+                                    scope = viewModelScope,
+                                    closeTransportOnClose = true,
+                                )
+                                session.start()
+                                if (!promoteActiveTransportToSession(transport, session)) {
+                                    session.close()
+                                    throw CancellationException("O transporte ADB deixou de ser o alvo ativo antes da promocao da sessao.")
+                                }
+                                ownedTransport = null
+
+                                mutableState.value = mutableState.value.copy(
+                                    operation = AdbProbeOperationState.Connected(
+                                        transportId = transportId,
+                                        protocolVersion = handshakeState.peer.protocolVersion,
+                                        maxDataBytes = handshakeState.peer.maxDataBytes,
+                                        banner = handshakeState.peer.banner,
+                                    ),
+                                    diagnostics = AdbProbeDiagnosticsState.Idle,
+                                )
+                                diagnosticsRecorder.record(
+                                    severity = DiagnosticSeverity.INFO,
+                                    component = "adb",
+                                    action = "handshake.connected",
+                                    message = "Handshake ADB concluido; sessao autenticada disponivel para acoes explicitas.",
+                                    metadata = mapOf(
+                                        "protocolVersion" to handshakeState.peer.protocolVersion.toString(),
+                                        "maxDataBytes" to handshakeState.peer.maxDataBytes.toString(),
+                                    ),
+                                )
                                 return@withTimeout
                             }
 
@@ -254,12 +291,78 @@ internal class AdbProbeViewModel(
         }
     }
 
+    /** Opens the allowlisted read-only services only after an explicit user action. */
+    fun collectDiagnostics() {
+        val generation = operationGeneration.get()
+        val session = synchronized(connectionLock) { activeSession }
+        if (session == null || mutableState.value.operation !is AdbProbeOperationState.Connected) {
+            mutableState.value = mutableState.value.copy(
+                diagnostics = AdbProbeDiagnosticsState.Error(
+                    "Nao existe uma sessao ADB autenticada ativa para coletar diagnosticos.",
+                ),
+            )
+            return
+        }
+
+        diagnosticsJob?.cancel()
+        mutableState.value = mutableState.value.copy(diagnostics = AdbProbeDiagnosticsState.Running)
+        diagnosticsJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val snapshot = AdbReadonlyDiagnosticRunner(session).collect()
+                if (!isCurrentSession(generation, session)) return@launch
+
+                mutableState.value = mutableState.value.copy(
+                    diagnostics = AdbProbeDiagnosticsState.Ready(snapshot),
+                )
+                diagnosticsRecorder.record(
+                    severity = DiagnosticSeverity.INFO,
+                    component = "adb",
+                    action = "diagnostics.completed",
+                    message = "Coleta ADB somente leitura concluida.",
+                    metadata = mapOf(
+                        "sectionCount" to snapshot.sections.size.toString(),
+                        "retainedByteCount" to snapshot.retainedByteCount.toString(),
+                        "budgetExhausted" to snapshot.budgetExhausted.toString(),
+                    ),
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (!isCurrentSession(generation, session)) return@launch
+                mutableState.value = mutableState.value.copy(
+                    diagnostics = AdbProbeDiagnosticsState.Error(
+                        error.message ?: "Falha inesperada na coleta ADB: ${error.javaClass.simpleName}.",
+                    ),
+                )
+                diagnosticsRecorder.record(
+                    severity = DiagnosticSeverity.ERROR,
+                    component = "adb",
+                    action = "diagnostics.failed",
+                    message = "Coleta ADB somente leitura falhou.",
+                    metadata = mapOf("errorType" to error.javaClass.simpleName),
+                )
+            }
+        }
+    }
+
+    fun cancelDiagnostics() {
+        diagnosticsJob?.cancel()
+        diagnosticsJob = null
+        if (mutableState.value.operation is AdbProbeOperationState.Connected) {
+            mutableState.value = mutableState.value.copy(diagnostics = AdbProbeDiagnosticsState.Idle)
+        }
+    }
+
     fun cancelActiveOperation() {
         operationGeneration.incrementAndGet()
         probeJob?.cancel()
+        diagnosticsJob?.cancel()
         scanJob?.cancel()
-        mutableState.value = mutableState.value.copy(operation = AdbProbeOperationState.Idle)
-        viewModelScope.launch(Dispatchers.IO) { closeActiveTransport() }
+        mutableState.value = mutableState.value.copy(
+            operation = AdbProbeOperationState.Idle,
+            diagnostics = AdbProbeDiagnosticsState.Idle,
+        )
+        viewModelScope.launch(Dispatchers.IO) { closeActiveConnection() }
     }
 
     private fun publishRunning(
@@ -275,6 +378,7 @@ internal class AdbProbeViewModel(
                 stage = stage,
                 awaitingDeviceAuthorization = awaitingAuthorization,
             ),
+            diagnostics = AdbProbeDiagnosticsState.Idle,
         )
     }
 
@@ -286,6 +390,7 @@ internal class AdbProbeViewModel(
         if (operationGeneration.get() != generation) return
         mutableState.value = mutableState.value.copy(
             operation = AdbProbeOperationState.Error(message, authorizationMayBePending),
+            diagnostics = AdbProbeDiagnosticsState.Idle,
         )
         diagnosticsRecorder.record(
             severity = DiagnosticSeverity.ERROR,
@@ -297,23 +402,75 @@ internal class AdbProbeViewModel(
     }
 
     private fun registerActiveTransport(transport: AdbMessageTransport) {
-        synchronized(transportLock) {
+        synchronized(connectionLock) {
+            check(activeTransport == null && activeSession == null) {
+                "Ja existe um recurso ADB ativo durante o registro de um novo transporte."
+            }
             activeTransport = transport
         }
     }
 
-    private suspend fun closeActiveTransport() {
-        val transport = synchronized(transportLock) {
-            activeTransport.also { activeTransport = null }
-        } ?: return
-        closeTransportSafely(transport, "active")
+    private fun promoteActiveTransportToSession(
+        transport: AdbMessageTransport,
+        session: AdbSessionController,
+    ): Boolean = synchronized(connectionLock) {
+        if (activeTransport !== transport || activeSession != null) {
+            false
+        } else {
+            activeTransport = null
+            activeSession = session
+            true
+        }
+    }
+
+    private fun isCurrentSession(
+        generation: Long,
+        session: AdbSessionController,
+    ): Boolean = operationGeneration.get() == generation && synchronized(connectionLock) {
+        activeSession === session
+    }
+
+    private suspend fun closeActiveConnection() {
+        val resources = synchronized(connectionLock) {
+            val session = activeSession
+            val transport = activeTransport
+            activeSession = null
+            activeTransport = null
+            session to transport
+        }
+        resources.first?.let { session -> closeSessionSafely(session, "active") }
+        resources.second?.let { transport -> closeTransportSafely(transport, "active") }
     }
 
     private suspend fun closeOwnedTransport(transport: AdbMessageTransport) {
-        synchronized(transportLock) {
+        synchronized(connectionLock) {
             if (activeTransport === transport) activeTransport = null
         }
         closeTransportSafely(transport, "owned")
+    }
+
+    private suspend fun closeSessionSafely(
+        session: AdbSessionController,
+        ownership: String,
+    ) {
+        try {
+            withContext(NonCancellable) {
+                session.close()
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            diagnosticsRecorder.record(
+                severity = DiagnosticSeverity.ERROR,
+                component = "adb",
+                action = "session.close.failed",
+                message = "Falha ao fechar sessao ADB de forma deterministica.",
+                metadata = mapOf(
+                    "ownership" to ownership,
+                    "errorType" to error.javaClass.simpleName,
+                ),
+            )
+        }
     }
 
     private suspend fun closeTransportSafely(
@@ -362,9 +519,10 @@ internal class AdbProbeViewModel(
         operationGeneration.incrementAndGet()
         scanJob?.cancel()
         probeJob?.cancel()
+        diagnosticsJob?.cancel()
         runBlocking {
             withContext(NonCancellable + Dispatchers.IO) {
-                closeActiveTransport()
+                closeActiveConnection()
                 closeBackendSafely()
             }
         }
