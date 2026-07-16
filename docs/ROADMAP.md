@@ -50,11 +50,12 @@ Entregue:
 - expansão Android Sparse em streaming com `RAW`, `FILL`, `DONT_CARE`, CRC32, SHA-256 e limites defensivos;
 - fluxo Android explícito para selecionar o destino da expansão Sparse, bloquear origem=destino e sinalizar saída parcial em falhas;
 - parser estrutural Android Boot Image v0-v4 com validação de layout, alinhamentos, offsets e truncamento;
+- extração streaming e hash-bound de payloads Android Boot Image sem padding;
+- tela dedicada para revalidar a origem e exportar uma seção Boot Image por vez, com `HEADER` bloqueado e aviso de destino parcial;
 - parser raw de metadata de partições dinâmicas Android `super`/liblp com validação de geometria, checksums, tabelas e referências cruzadas.
 
 Pendente:
 
-- interpretação adicional e extração controlada de payloads de boot images;
 - tradução segura de `super.img` sparse para o parser raw;
 - mapeamento e extração controlada de partições lógicas;
 - análise estrutural aprofundada de imagens raw/filesystems;
