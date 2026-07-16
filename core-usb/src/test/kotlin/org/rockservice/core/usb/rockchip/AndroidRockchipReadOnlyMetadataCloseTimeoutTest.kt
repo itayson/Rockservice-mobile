@@ -5,11 +5,10 @@ import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.rockservice.core.usb.UsbDeviceDescriptor
@@ -63,18 +62,22 @@ class AndroidRockchipReadOnlyMetadataCloseTimeoutTest {
                 transportMethod = RockchipUsbIoMethod.USB_REQUEST,
                 closeTimeoutMillis = 100L,
             )
-            val recoveryReport = withTimeout(1_000L) {
-                while (true) {
-                    val report = recoveryClient.probe(testDevice())
-                    if (recoveryOpenCount.get() > 0) return@withTimeout report
-                    delay(10L)
+
+            var recoveryReport: RockchipMetadataProbeReport? = null
+            for (attempt in 0 until 100) {
+                val candidate = recoveryClient.probe(testDevice())
+                if (recoveryOpenCount.get() > 0) {
+                    recoveryReport = candidate
+                    break
                 }
-                error("unreachable")
+                Thread.sleep(10L)
             }
 
+            assertNotNull("Probe slot was not released after the close worker exited.", recoveryReport)
+            val recovered = requireNotNull(recoveryReport)
             assertEquals(1, recoveryOpenCount.get())
-            assertTrue(recoveryReport.entries.all(RockchipMetadataProbeEntry::succeeded))
-            assertFalse(recoveryReport.requiresReconnect)
+            assertTrue(recovered.entries.all(RockchipMetadataProbeEntry::succeeded))
+            assertFalse(recovered.requiresReconnect)
             assertEquals(1, recoveryTransport.closeCount.get())
         } finally {
             transport.releaseClose.countDown()
