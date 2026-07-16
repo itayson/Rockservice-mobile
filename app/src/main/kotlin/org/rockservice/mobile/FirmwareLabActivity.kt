@@ -1,6 +1,7 @@
 package org.rockservice.mobile
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -18,10 +19,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import org.rockservice.core.common.diagnostics.DiagnosticSeverity
+import org.rockservice.feature.firmware.FirmwareFormat
 
 /** Entry screen for selecting, analyzing and explicitly transforming firmware image files. */
 class FirmwareLabActivity : ComponentActivity() {
@@ -40,11 +45,13 @@ class FirmwareLabActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val state by firmwareLabViewModel.state.collectAsState()
+                var selectedFirmwareUriString by rememberSaveable { mutableStateOf<String?>(null) }
                 val resolver = applicationContext.contentResolver
                 val selectDocument = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.OpenDocument(),
                 ) { uri ->
                     uri?.let { selectedUri ->
+                        selectedFirmwareUriString = selectedUri.toString()
                         firmwareLabViewModel.analyze(resolver, selectedUri)
                     }
                 }
@@ -90,6 +97,24 @@ class FirmwareLabActivity : ComponentActivity() {
                                 },
                                 onExpandSparse = { suggestedName ->
                                     expandSparse.launch(suggestedName)
+                                },
+                                onOpenBootExtraction = {
+                                    val report = (state.analysis as? FirmwareLabAnalysisState.Ready)?.report
+                                    val sourceUri = selectedFirmwareUriString?.let(Uri::parse)
+                                    if (
+                                        report != null &&
+                                        sourceUri != null &&
+                                        report.detectedFormat == FirmwareFormat.ANDROID_BOOT_IMAGE
+                                    ) {
+                                        startActivity(
+                                            BootImageExtractionActivity.createIntent(
+                                                context = this@FirmwareLabActivity,
+                                                sourceUri = sourceUri,
+                                                expectedSourceSha256 = report.sha256,
+                                                displayName = report.displayName,
+                                            ),
+                                        )
+                                    }
                                 },
                             )
                         }
