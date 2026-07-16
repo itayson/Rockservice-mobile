@@ -8,11 +8,16 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import java.io.Closeable
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.rockservice.core.usb.UsbDeviceDescriptor
 
@@ -41,65 +46,112 @@ interface AdbMessageTransport {
 /** Android USB Host transport restricted to a single validated ADB interface profile. */
 internal class AndroidAdbUsbTransport(
     private val io: AdbUsbIo,
+    private val blockingDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : AdbMessageTransport {
     private val closed = AtomicBoolean(false)
-    private val operationMutex = Mutex()
+    private val sendMutex = Mutex()
+    private val receiveMutex = Mutex()
+    private val closeMutex = Mutex()
 
-    override suspend fun send(message: AdbMessage, timeoutMillis: Long) = withTimeout(timeoutMillis) {
-        operationMutex.withLock {
-            check(!closed.get()) { "ADB USB transport is closed." }
-            require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
-            currentCoroutineContext().ensureActive()
-            val frame = AdbProtocolCodec.encode(message)
-            io.writeExactly(frame, ioTimeout(timeoutMillis))
-            currentCoroutineContext().ensureActive()
+    override suspend fun send(message: AdbMessage, timeoutMillis: Long) {
+        require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
+        val ioDeadlineNanos = ioDeadlineAfter(timeoutMillis)
+        withTimeout(timeoutMillis) {
+            sendMutex.withLock {
+                check(!closed.get()) { "ADB USB transport is closed." }
+                currentCoroutineContext().ensureActive()
+                val frame = AdbProtocolCodec.encode(message)
+                withContext(blockingDispatcher) {
+                    io.writeExactly(
+                        frame,
+                        remainingIoTimeout(ioDeadlineNanos, "ADB USB send"),
+                    )
+                }
+                currentCoroutineContext().ensureActive()
+            }
         }
     }
 
     override suspend fun receive(
         timeoutMillis: Long,
         requireChecksum: Boolean,
-    ): AdbMessage = withTimeout(timeoutMillis) {
-        operationMutex.withLock {
-            check(!closed.get()) { "ADB USB transport is closed." }
-            require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
-            val ioTimeout = ioTimeout(timeoutMillis)
-            currentCoroutineContext().ensureActive()
+    ): AdbMessage {
+        require(timeoutMillis > 0L) { "ADB USB timeout must be positive." }
+        val ioDeadlineNanos = ioDeadlineAfter(timeoutMillis)
+        return withTimeout(timeoutMillis) {
+            receiveMutex.withLock {
+                check(!closed.get()) { "ADB USB transport is closed." }
+                currentCoroutineContext().ensureActive()
 
-            val headerBytes = io.readExactly(AdbProtocolCodec.HEADER_SIZE_BYTES, ioTimeout)
-            val header = AdbProtocolCodec.decodeHeader(headerBytes)
-            currentCoroutineContext().ensureActive()
-            val payload = if (header.dataLength == 0) {
-                ByteArray(0)
-            } else {
-                io.readExactly(header.dataLength, ioTimeout)
+                val headerBytes = withContext(blockingDispatcher) {
+                    io.readExactly(
+                        AdbProtocolCodec.HEADER_SIZE_BYTES,
+                        remainingIoTimeout(ioDeadlineNanos, "ADB USB receive header"),
+                    )
+                }
+                val header = AdbProtocolCodec.decodeHeader(headerBytes)
+                currentCoroutineContext().ensureActive()
+                val payload = if (header.dataLength == 0) {
+                    ByteArray(0)
+                } else {
+                    withContext(blockingDispatcher) {
+                        io.readExactly(
+                            header.dataLength,
+                            remainingIoTimeout(ioDeadlineNanos, "ADB USB receive payload"),
+                        )
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                AdbProtocolCodec.decodePayload(header, payload, requireChecksum)
             }
-            currentCoroutineContext().ensureActive()
-            AdbProtocolCodec.decodePayload(header, payload, requireChecksum)
         }
     }
 
     override suspend fun close() {
-        operationMutex.withLock {
-            if (closed.compareAndSet(false, true)) io.close()
+        closeMutex.withLock {
+            if (!closed.compareAndSet(false, true)) return@withLock
+            withContext(NonCancellable) {
+                sendMutex.withLock {
+                    receiveMutex.withLock {
+                        withContext(blockingDispatcher) {
+                            io.close()
+                        }
+                    }
+                }
+            }
         }
     }
 
-    private fun ioTimeout(timeoutMillis: Long): Int =
-        (timeoutMillis - IO_TIMEOUT_MARGIN_MILLIS)
+    private fun ioDeadlineAfter(timeoutMillis: Long): Long {
+        val marginMillis = minOf(IO_TIMEOUT_MARGIN_MILLIS, timeoutMillis / 4L)
+        val boundedTimeoutMillis = (timeoutMillis - marginMillis)
             .coerceAtLeast(1L)
-            .coerceAtMost(MAXIMUM_SINGLE_IO_TIMEOUT_MILLIS.toLong())
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+        return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(boundedTimeoutMillis)
+    }
+
+    private fun remainingIoTimeout(deadlineNanos: Long, operation: String): Int {
+        val remainingNanos = deadlineNanos - System.nanoTime()
+        check(remainingNanos > 0L) { "$operation exceeded its total timeout before blocking I/O started." }
+        val remainingMillis = (remainingNanos + NANOS_PER_MILLISECOND - 1L) / NANOS_PER_MILLISECOND
+        return remainingMillis
+            .coerceAtLeast(1L)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
             .toInt()
+    }
 
     private companion object {
         const val IO_TIMEOUT_MARGIN_MILLIS = 250L
-        const val MAXIMUM_SINGLE_IO_TIMEOUT_MILLIS = 2_000
+        const val NANOS_PER_MILLISECOND = 1_000_000L
     }
 }
 
 /** Minimal blocking USB I/O boundary used by the coroutine transport. */
 internal interface AdbUsbIo : Closeable {
+    /** Writes the complete byte array before the total timeout expires. */
     fun writeExactly(bytes: ByteArray, timeoutMillis: Int)
+
+    /** Reads exactly [byteCount] bytes before the total timeout expires. */
     fun readExactly(byteCount: Int, timeoutMillis: Int): ByteArray
 }
 
@@ -207,17 +259,20 @@ private class AndroidAdbBulkIo(
 
     override fun writeExactly(bytes: ByteArray, timeoutMillis: Int) {
         check(!closed.get()) { "ADB USB connection is closed." }
+        require(timeoutMillis > 0) { "ADB USB write timeout must be positive." }
+        val deadlineNanos = deadlineAfter(timeoutMillis)
         var offset = 0
         while (offset < bytes.size) {
+            val transferTimeout = remainingTransferTimeout(deadlineNanos, "ADB bulk OUT")
             val count = connection.bulkTransfer(
                 bulkOut,
                 bytes,
                 offset,
                 bytes.size - offset,
-                timeoutMillis,
+                transferTimeout,
             )
             check(count > 0) {
-                "ADB bulk OUT failed, timed out or made no progress after $timeoutMillis ms at offset $offset."
+                "ADB bulk OUT failed, timed out or made no progress after $transferTimeout ms at offset $offset."
             }
             offset += count
         }
@@ -225,23 +280,26 @@ private class AndroidAdbBulkIo(
 
     override fun readExactly(byteCount: Int, timeoutMillis: Int): ByteArray {
         check(!closed.get()) { "ADB USB connection is closed." }
+        require(timeoutMillis > 0) { "ADB USB read timeout must be positive." }
         require(byteCount in 0..AdbProtocolCodec.MAXIMUM_PAYLOAD_BYTES) {
             "ADB USB read length $byteCount exceeds the local payload limit."
         }
         if (byteCount == 0) return ByteArray(0)
 
+        val deadlineNanos = deadlineAfter(timeoutMillis)
         val output = ByteArray(byteCount)
         var offset = 0
         while (offset < output.size) {
+            val transferTimeout = remainingTransferTimeout(deadlineNanos, "ADB bulk IN")
             val count = connection.bulkTransfer(
                 bulkIn,
                 output,
                 offset,
                 output.size - offset,
-                timeoutMillis,
+                transferTimeout,
             )
             check(count > 0) {
-                "ADB bulk IN failed, timed out or made no progress after $timeoutMillis ms at offset $offset."
+                "ADB bulk IN failed, timed out or made no progress after $transferTimeout ms at offset $offset."
             }
             offset += count
         }
@@ -255,5 +313,23 @@ private class AndroidAdbBulkIo(
         } finally {
             connection.close()
         }
+    }
+
+    private fun deadlineAfter(timeoutMillis: Int): Long =
+        System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis.toLong())
+
+    private fun remainingTransferTimeout(deadlineNanos: Long, operation: String): Int {
+        val remainingNanos = deadlineNanos - System.nanoTime()
+        check(remainingNanos > 0L) { "$operation exceeded its total timeout before completing." }
+        val remainingMillis = (remainingNanos + NANOS_PER_MILLISECOND - 1L) / NANOS_PER_MILLISECOND
+        return remainingMillis
+            .coerceAtLeast(1L)
+            .coerceAtMost(MAXIMUM_SINGLE_BULK_TRANSFER_TIMEOUT_MILLIS.toLong())
+            .toInt()
+    }
+
+    private companion object {
+        const val MAXIMUM_SINGLE_BULK_TRANSFER_TIMEOUT_MILLIS = 2_000
+        const val NANOS_PER_MILLISECOND = 1_000_000L
     }
 }
