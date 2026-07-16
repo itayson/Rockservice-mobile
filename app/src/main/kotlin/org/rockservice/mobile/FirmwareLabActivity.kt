@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import org.rockservice.core.common.diagnostics.DiagnosticSeverity
 
-/** Entry screen for selecting, analyzing and exporting reports for firmware image files. */
+/** Entry screen for selecting, analyzing and explicitly transforming firmware image files. */
 class FirmwareLabActivity : ComponentActivity() {
     private lateinit var firmwareLabViewModel: FirmwareLabViewModel
 
@@ -55,6 +55,13 @@ class FirmwareLabActivity : ComponentActivity() {
                         firmwareLabViewModel.exportReport(resolver, destinationUri)
                     }
                 }
+                val expandSparse = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("application/octet-stream"),
+                ) { uri ->
+                    uri?.let { destinationUri ->
+                        firmwareLabViewModel.expandSparse(resolver, destinationUri)
+                    }
+                }
 
                 Scaffold(
                     topBar = {
@@ -80,6 +87,9 @@ class FirmwareLabActivity : ComponentActivity() {
                                 },
                                 onExportReport = { suggestedName ->
                                     exportReport.launch(suggestedName)
+                                },
+                                onExpandSparse = { suggestedName ->
+                                    expandSparse.launch(suggestedName)
                                 },
                             )
                         }
