@@ -197,14 +197,20 @@ class AdbHandshakeStateMachineTest {
 
     @Test
     fun `failed start validation leaves machine idle`() {
-        val machine = AdbHandshakeStateMachine(
+        val invalidMaxData = AdbHandshakeStateMachine(
             identity = FakeIdentity(),
             maxDataBytes = 0,
         )
+        val unsupportedFutureVersion = AdbHandshakeStateMachine(
+            identity = FakeIdentity(),
+            protocolVersion = AdbProtocolCodec.DEFAULT_PROTOCOL_VERSION + 1,
+        )
 
-        expectIllegalArgument { machine.start() }
+        expectIllegalArgument { invalidMaxData.start() }
+        expectIllegalArgument { unsupportedFutureVersion.start() }
 
-        assertEquals(AdbHandshakeState.Idle, machine.state)
+        assertEquals(AdbHandshakeState.Idle, invalidMaxData.state)
+        assertEquals(AdbHandshakeState.Idle, unsupportedFutureVersion.state)
     }
 
     @Test
