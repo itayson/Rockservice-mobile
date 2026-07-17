@@ -1,70 +1,152 @@
 package org.rockservice.core.usb.media
 
-import org.junit.Assert.assertArrayEquals
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UsbMassStorageSessionTest {
     @Test
-    fun `reads block geometry from READ CAPACITY 10`() {
-        var capturedCommand = byteArrayOf()
-        var capturedExpectedBytes = 0
-        val session = UsbMassStorageSession { command, expectedBytes ->
+    fun `reads block geometry through typed READ CAPACITY 10 command`() = runTest {
+        var capturedCommand: UsbMassStorageReadCommand? = null
+        var capturedTimeoutMillis = 0L
+        val session = UsbMassStorageSession { command, timeoutMillis ->
             capturedCommand = command
-            capturedExpectedBytes = expectedBytes
-            byteArrayOf(
-                0x00, 0x00, 0x07, 0xff.toByte(),
-                0x00, 0x00, 0x02, 0x00,
+            capturedTimeoutMillis = timeoutMillis
+            UsbMassStorageTransferResult.Success(
+                byteArrayOf(
+                    0x00, 0x00, 0x07, 0xff.toByte(),
+                    0x00, 0x00, 0x02, 0x00,
+                ),
             )
         }
 
-        val geometry = session.readGeometry()
+        val geometry = session.readGeometry(timeoutMillis = 2_500L)
 
-        assertArrayEquals(
-            byteArrayOf(0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-            capturedCommand,
-        )
-        assertEquals(8, capturedExpectedBytes)
+        assertEquals(UsbMassStorageReadCommand.READ_CAPACITY_10, capturedCommand)
+        assertEquals(8, capturedCommand?.expectedDataInBytes)
+        assertEquals(2_500L, capturedTimeoutMillis)
         assertEquals(512, geometry.blockSizeBytes)
         assertEquals(2048L, geometry.blockCount)
         assertEquals(1_048_576L, geometry.capacityBytes)
     }
 
     @Test
-    fun `rejects truncated READ CAPACITY response`() {
-        val session = UsbMassStorageSession { _, _ -> ByteArray(7) }
+    fun `rejects truncated READ CAPACITY response`() = runTest {
+        val session = UsbMassStorageSession { _, _ ->
+            UsbMassStorageTransferResult.Success(ByteArray(7))
+        }
 
-        assertThrows(IllegalArgumentException::class.java) {
+        expectFailure(IllegalArgumentException::class.java) {
             session.readGeometry()
         }
     }
 
     @Test
-    fun `rejects zero block size`() {
+    fun `rejects zero block size`() = runTest {
         val session = UsbMassStorageSession { _, _ ->
-            byteArrayOf(
-                0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
+            UsbMassStorageTransferResult.Success(
+                byteArrayOf(
+                    0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00,
+                ),
             )
         }
 
-        assertThrows(IllegalArgumentException::class.java) {
+        expectFailure(IllegalArgumentException::class.java) {
             session.readGeometry()
         }
     }
 
     @Test
-    fun `requires READ CAPACITY 16 for large devices`() {
+    fun `requires READ CAPACITY 16 for large devices`() = runTest {
         val session = UsbMassStorageSession { _, _ ->
-            byteArrayOf(
-                0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
-                0x00, 0x00, 0x02, 0x00,
+            UsbMassStorageTransferResult.Success(
+                byteArrayOf(
+                    0xff.toByte(), 0xff.toByte(), 0xff.toByte(), 0xff.toByte(),
+                    0x00, 0x00, 0x02, 0x00,
+                ),
             )
         }
 
-        assertThrows(IllegalArgumentException::class.java) {
+        expectFailure(IllegalArgumentException::class.java) {
             session.readGeometry()
         }
+    }
+
+    @Test
+    fun `surfaces disconnect without waiting for timeout`() = runTest {
+        val session = UsbMassStorageSession { _, _ ->
+            UsbMassStorageTransferResult.Disconnected
+        }
+
+        expectFailure(UsbMassStorageDisconnectedException::class.java) {
+            session.readGeometry(timeoutMillis = 10_000L)
+        }
+    }
+
+    @Test
+    fun `surfaces transport reported timeout`() = runTest {
+        val session = UsbMassStorageSession { _, _ ->
+            UsbMassStorageTransferResult.TimedOut
+        }
+
+        expectFailure(UsbMassStorageTimeoutException::class.java) {
+            session.readGeometry(timeoutMillis = 10_000L)
+        }
+    }
+
+    @Test
+    fun `hard timeout terminates stalled transport`() = runTest {
+        val session = UsbMassStorageSession { _, _ ->
+            awaitCancellation()
+        }
+
+        val error = expectFailure(UsbMassStorageTimeoutException::class.java) {
+            session.readGeometry(timeoutMillis = 100L)
+        }
+
+        assertTrue(error.cause is TimeoutCancellationException)
+    }
+
+    @Test
+    fun `caller cancellation propagates to in-flight transport`() = runTest {
+        val transferStarted = CompletableDeferred<Unit>()
+        val session = UsbMassStorageSession { _, _ ->
+            transferStarted.complete(Unit)
+            awaitCancellation()
+        }
+
+        val job = launch {
+            session.readGeometry(timeoutMillis = 10_000L)
+        }
+
+        transferStarted.await()
+        job.cancel()
+        job.join()
+
+        assertTrue(job.isCancelled)
+    }
+
+    private suspend fun <T : Throwable> expectFailure(
+        type: Class<T>,
+        block: suspend () -> Unit,
+    ): T {
+        try {
+            block()
+        } catch (error: Throwable) {
+            if (type.isInstance(error)) {
+                return type.cast(error)
+            }
+            throw AssertionError(
+                "Expected ${type.simpleName}, but received ${error::class.java.simpleName}.",
+                error,
+            )
+        }
+        throw AssertionError("Expected ${type.simpleName}, but no exception was thrown.")
     }
 }
