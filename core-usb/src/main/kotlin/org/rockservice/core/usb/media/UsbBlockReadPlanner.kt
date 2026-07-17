@@ -181,27 +181,32 @@ class UsbBlockReadPlanner(
 }
 
 /**
- * Incrementally computes SHA-256 while enforcing the exact byte length declared by a read plan.
+ * Thread-safe incremental SHA-256 accumulator bound to the exact byte length declared by a read plan.
+ *
+ * All state transitions use one monitor so concurrent producers cannot over-accept bytes, mutate the
+ * digest after finalization, or observe a byte count that is inconsistent with the digest state.
  */
 class UsbBlockReadSha256Accumulator internal constructor(
     private val expectedByteCount: Long,
 ) {
+    private val lock = Any()
     private val digest = MessageDigest.getInstance("SHA-256")
     private var finished = false
+    private var acceptedByteCountInternal = 0L
 
     /** Number of bytes accepted so far. */
-    var acceptedByteCount: Long = 0L
-        private set
+    val acceptedByteCount: Long
+        get() = synchronized(lock) { acceptedByteCountInternal }
 
     /**
      * Adds one non-empty read chunk and rejects any update that would exceed the planned byte count.
      */
-    fun update(data: ByteArray) {
+    fun update(data: ByteArray) = synchronized(lock) {
         check(!finished) { "SHA-256 accumulator has already been finished." }
         require(data.isNotEmpty()) { "Read chunks must not be empty." }
 
         val nextByteCount = try {
-            Math.addExact(acceptedByteCount, data.size.toLong())
+            Math.addExact(acceptedByteCountInternal, data.size.toLong())
         } catch (error: ArithmeticException) {
             throw IllegalArgumentException("Accepted byte count overflowed.", error)
         }
@@ -210,21 +215,21 @@ class UsbBlockReadSha256Accumulator internal constructor(
         }
 
         digest.update(data)
-        acceptedByteCount = nextByteCount
+        acceptedByteCountInternal = nextByteCount
     }
 
     /**
      * Finalizes SHA-256 only after exactly the planned number of bytes has been accepted.
      */
-    fun finish(): UsbBlockReadIntegrity {
+    fun finish(): UsbBlockReadIntegrity = synchronized(lock) {
         check(!finished) { "SHA-256 accumulator has already been finished." }
-        check(acceptedByteCount == expectedByteCount) {
-            "Cannot finish an incomplete read: accepted=$acceptedByteCount, expected=$expectedByteCount."
+        check(acceptedByteCountInternal == expectedByteCount) {
+            "Cannot finish an incomplete read: accepted=$acceptedByteCountInternal, expected=$expectedByteCount."
         }
 
         finished = true
-        return UsbBlockReadIntegrity(
-            byteCount = acceptedByteCount,
+        UsbBlockReadIntegrity(
+            byteCount = acceptedByteCountInternal,
             sha256 = digest.digest().toLowerHex(),
         )
     }
