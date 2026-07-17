@@ -9,7 +9,7 @@ data class UsbBlockReadChunk(
     val blockCount: Int,
     val deviceByteOffset: Long,
     val planByteOffset: Long,
-    val byteCount: Int,
+    val byteCount: Long,
 )
 
 /** Integrity metadata produced after exactly all bytes in a read plan have been accepted. */
@@ -50,7 +50,7 @@ class UsbBlockReadPlan internal constructor(
             val startBlockThisChunk = Math.addExact(startBlock, emittedBlocks)
             val planByteOffset = Math.multiplyExact(emittedBlocks, blockSizeBytes.toLong())
             val deviceByteOffset = Math.addExact(startByteOffset, planByteOffset)
-            val chunkByteCount = Math.multiplyExact(blocksThisChunk, blockSizeBytes)
+            val chunkByteCount = Math.multiplyExact(blocksThisChunk.toLong(), blockSizeBytes.toLong())
 
             yield(
                 UsbBlockReadChunk(
