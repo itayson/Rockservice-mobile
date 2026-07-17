@@ -24,14 +24,18 @@ object RawImageWritePlanner {
         require(imageSizeBytes > 0L) { "A imagem deve conter pelo menos 1 byte." }
         require(targetCapacityBytes > 0L) { "A capacidade do destino deve ser positiva." }
         require(blockSizeBytes > 0) { "O tamanho de bloco deve ser positivo." }
+
+        val blockSize = blockSizeBytes.toLong()
+        require(targetCapacityBytes % blockSize == 0L) {
+            "A capacidade do destino deve ser alinhada ao tamanho de bloco informado."
+        }
         require(imageSizeBytes <= targetCapacityBytes) {
             "A imagem ($imageSizeBytes bytes) é maior que o destino ($targetCapacityBytes bytes)."
         }
 
-        val blockSize = blockSizeBytes.toLong()
         val requiredBlocks = Math.addExact(imageSizeBytes, blockSize - 1L) / blockSize
         val coveredBytes = Math.multiplyExact(requiredBlocks, blockSize)
-        require(coveredBytes <= targetCapacityBytes || imageSizeBytes == targetCapacityBytes) {
+        require(coveredBytes <= targetCapacityBytes) {
             "O último bloco da imagem ultrapassaria a capacidade física do destino."
         }
 
