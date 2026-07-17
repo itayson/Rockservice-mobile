@@ -23,11 +23,19 @@ object AndroidUsbMassStorageDiscovery {
     private const val MASS_STORAGE_SCSI_SUBCLASS = 0x06
     private const val MASS_STORAGE_BULK_ONLY_PROTOCOL = 0x50
 
+    /** Enumerates supported interfaces without opening a device session. */
     fun discover(context: Context): List<UsbMassStorageCandidate> {
-        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as? UsbManager
+            ?: throw IllegalStateException("O serviço USB do Android não está disponível neste dispositivo.")
         return usbManager.deviceList.values
             .flatMap { device -> device.massStorageInterfaces(usbManager) }
-            .sortedWith(compareBy(UsbMassStorageCandidate::vendorId, UsbMassStorageCandidate::productId, UsbMassStorageCandidate::interfaceId))
+            .sortedWith(
+                compareBy(
+                    UsbMassStorageCandidate::vendorId,
+                    UsbMassStorageCandidate::productId,
+                    UsbMassStorageCandidate::interfaceId,
+                ).thenBy(UsbMassStorageCandidate::deviceId),
+            )
     }
 
     private fun UsbDevice.massStorageInterfaces(usbManager: UsbManager): List<UsbMassStorageCandidate> {
