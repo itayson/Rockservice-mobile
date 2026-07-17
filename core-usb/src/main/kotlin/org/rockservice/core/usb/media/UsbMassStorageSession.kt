@@ -32,15 +32,16 @@ sealed interface UsbMassStorageTransferResult {
  *
  * Only commands represented by [UsbMassStorageReadCommand] can be submitted. Implementations must
  * never expose arbitrary CDB execution through this interface and must remain cooperative with
- * coroutine cancellation so detach, reset, and caller cancellation can terminate in-flight work.
+ * coroutine cancellation. Concrete adapters are responsible for bounding any blocking USB I/O and
+ * mapping detach or reset events to [UsbMassStorageTransferResult.Disconnected].
  */
 fun interface UsbMassStorageCommandTransport {
     /**
      * Executes one whitelisted read-only command.
      *
-     * [timeoutMillis] is the maximum duration requested by the caller. The session also enforces
-     * this value as a hard timeout, so an implementation cannot block [UsbMassStorageSession]
-     * indefinitely even if the underlying USB API stalls.
+     * [timeoutMillis] is the maximum duration requested by the caller. Implementations should use
+     * it to configure timeout/deadline behavior at the concrete USB API boundary when supported.
+     * Coroutine cancellation alone does not guarantee preemption of a blocking platform I/O call.
      */
     suspend fun execute(
         command: UsbMassStorageReadCommand,
@@ -76,8 +77,9 @@ class UsbMassStorageSession(
     /**
      * Reads the device block size and capacity through the read-only READ CAPACITY (10) command.
      *
-     * Caller cancellation is propagated unchanged. A stalled transport is bounded by
-     * [timeoutMillis], while detach/reset is surfaced as [UsbMassStorageDisconnectedException].
+     * Caller cancellation is propagated unchanged. The session applies a coroutine timeout to
+     * cooperative transport calls; concrete adapters remain responsible for bounding blocking USB
+     * I/O. Detach/reset is surfaced as [UsbMassStorageDisconnectedException].
      */
     suspend fun readGeometry(
         timeoutMillis: Long = DEFAULT_TRANSFER_TIMEOUT_MILLIS,
