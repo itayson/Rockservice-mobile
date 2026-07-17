@@ -1,9 +1,9 @@
 package org.rockservice.core.usb.media
 
-import kotlin.test.Test
-import kotlin.test.assertContentEquals
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Test
 
 class UsbMassStorageSessionTest {
     @Test
@@ -21,7 +21,7 @@ class UsbMassStorageSessionTest {
 
         val geometry = session.readGeometry()
 
-        assertContentEquals(
+        assertArrayEquals(
             byteArrayOf(0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0),
             capturedCommand,
         )
@@ -35,7 +35,7 @@ class UsbMassStorageSessionTest {
     fun `rejects truncated READ CAPACITY response`() {
         val session = UsbMassStorageSession { _, _ -> ByteArray(7) }
 
-        assertFailsWith<IllegalArgumentException> {
+        assertThrows(IllegalArgumentException::class.java) {
             session.readGeometry()
         }
     }
@@ -49,7 +49,7 @@ class UsbMassStorageSessionTest {
             )
         }
 
-        assertFailsWith<IllegalArgumentException> {
+        assertThrows(IllegalArgumentException::class.java) {
             session.readGeometry()
         }
     }
@@ -63,7 +63,7 @@ class UsbMassStorageSessionTest {
             )
         }
 
-        assertFailsWith<IllegalArgumentException> {
+        assertThrows(IllegalArgumentException::class.java) {
             session.readGeometry()
         }
     }
