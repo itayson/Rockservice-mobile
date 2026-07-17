@@ -101,7 +101,7 @@ class UsbMassStorageSessionTest {
     }
 
     @Test
-    fun `hard timeout terminates stalled transport`() = runTest {
+    fun `session timeout cancels cooperative transport`() = runTest {
         val session = UsbMassStorageSession { _, _ ->
             awaitCancellation()
         }
