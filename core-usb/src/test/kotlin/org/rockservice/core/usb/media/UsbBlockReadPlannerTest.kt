@@ -1,5 +1,8 @@
 package org.rockservice.core.usb.media
 
+import java.util.concurrent.CyclicBarrier
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -145,6 +148,51 @@ class UsbBlockReadPlannerTest {
             "9c56cc51b374c3ba189210d5b6d4bf57790d351c96c47c02190ecf1e430635ab",
             integrity.sha256,
         )
+    }
+
+    @Test
+    fun `serializes concurrent updates without exceeding planned byte count`() {
+        val geometry = UsbBlockDeviceGeometry(
+            blockSizeBytes = 1,
+            blockCount = 32L,
+            capacityBytes = 32L,
+        )
+        val accumulator = UsbBlockReadPlanner()
+            .plan(geometry = geometry, startBlock = 0L, blockCount = 32L)
+            .newSha256Accumulator()
+        val taskCount = 64
+        val barrier = CyclicBarrier(taskCount)
+        val executor = Executors.newFixedThreadPool(taskCount)
+
+        try {
+            val futures = (0 until taskCount).map {
+                executor.submit<Boolean> {
+                    barrier.await(5, TimeUnit.SECONDS)
+                    try {
+                        accumulator.update(byteArrayOf(0x5a))
+                        true
+                    } catch (_: IllegalArgumentException) {
+                        false
+                    }
+                }
+            }
+
+            val successfulUpdates = futures.count { future ->
+                future.get(10, TimeUnit.SECONDS)
+            }
+
+            assertEquals(32, successfulUpdates)
+            assertEquals(32L, accumulator.acceptedByteCount)
+
+            val integrity = accumulator.finish()
+            assertEquals(32L, integrity.byteCount)
+            assertEquals(
+                "60bf07c488aad18fda339df07e4fbc47b4f00be71711936f18d04d352ad01890",
+                integrity.sha256,
+            )
+        } finally {
+            executor.shutdownNow()
+        }
     }
 
     @Test
