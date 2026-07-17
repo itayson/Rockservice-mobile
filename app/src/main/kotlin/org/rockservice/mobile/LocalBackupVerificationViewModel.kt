@@ -20,6 +20,7 @@ import org.rockservice.core.usb.rockchip.RockchipBackupVerifier
 data class LocalBackupVerificationUiState(
     val running: Boolean = false,
     val resultMessage: String? = null,
+    val verificationPassed: Boolean = false,
     val manifestLoading: Boolean = false,
     val manifestMessage: String? = null,
     val loadedManifest: RockchipBackupManifest? = null,
@@ -73,12 +74,16 @@ class LocalBackupVerificationViewModel : ViewModel() {
     val state: StateFlow<LocalBackupVerificationUiState> = _state.asStateFlow()
 
     fun clearResult() {
-        _state.value = _state.value.copy(resultMessage = null)
+        _state.value = _state.value.copy(
+            resultMessage = null,
+            verificationPassed = false,
+        )
     }
 
     fun markMetadataEdited() {
         _state.value = _state.value.copy(
             resultMessage = null,
+            verificationPassed = false,
             manifestMessage = null,
             loadedManifest = null,
         )
@@ -93,6 +98,7 @@ class LocalBackupVerificationViewModel : ViewModel() {
             manifestLoading = true,
             manifestMessage = null,
             resultMessage = null,
+            verificationPassed = false,
         )
 
         manifestLoadJob = viewModelScope.launch {
@@ -150,13 +156,20 @@ class LocalBackupVerificationViewModel : ViewModel() {
 
         val input = LocalBackupVerificationInput.parse(startSectorText, sectorCountText, sha256Text)
             .getOrElse { error ->
-                _state.value = _state.value.copy(resultMessage = error.message)
+                _state.value = _state.value.copy(
+                    resultMessage = error.message,
+                    verificationPassed = false,
+                )
                 return
             }
 
-        _state.value = _state.value.copy(running = true, resultMessage = null)
+        _state.value = _state.value.copy(
+            running = true,
+            resultMessage = null,
+            verificationPassed = false,
+        )
         viewModelScope.launch {
-            val message = try {
+            val result = try {
                 withContext(Dispatchers.IO) {
                     val manifest = RockchipBackupManifest(
                         startSector = input.startSector,
@@ -168,22 +181,41 @@ class LocalBackupVerificationViewModel : ViewModel() {
                         ?: throw IOException("O arquivo selecionado não pode ser aberto.")
                     val verification = source.use { RockchipBackupVerifier.verify(manifest, it) }
                     if (verification.verified) {
-                        "Arquivo íntegro: tamanho e SHA-256 correspondem ao manifesto."
+                        VerificationExecutionResult(
+                            message = "Arquivo íntegro: tamanho e SHA-256 correspondem ao manifesto.",
+                            passed = true,
+                        )
                     } else {
-                        "Verificação falhou. Tamanho: ${if (verification.sizeMatches) "OK" else "DIVERGENTE"}. " +
-                            "SHA-256: ${if (verification.sha256Matches) "OK" else "DIVERGENTE"}."
+                        VerificationExecutionResult(
+                            message = "Verificação falhou. Tamanho: ${if (verification.sizeMatches) "OK" else "DIVERGENTE"}. " +
+                                "SHA-256: ${if (verification.sha256Matches) "OK" else "DIVERGENTE"}.",
+                            passed = false,
+                        )
                     }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: IOException) {
-                "Não foi possível ler o arquivo. Confirme que ele ainda está disponível e tente novamente."
+                VerificationExecutionResult(
+                    "Não foi possível ler o arquivo. Confirme que ele ainda está disponível e tente novamente.",
+                    false,
+                )
             } catch (_: SecurityException) {
-                "O acesso ao arquivo foi negado. Selecione o arquivo novamente e tente outra vez."
+                VerificationExecutionResult(
+                    "O acesso ao arquivo foi negado. Selecione o arquivo novamente e tente outra vez.",
+                    false,
+                )
             } catch (_: IllegalArgumentException) {
-                "Os metadados são inválidos. Revise o LBA, a quantidade de setores e o SHA-256."
+                VerificationExecutionResult(
+                    "Os metadados são inválidos. Revise o LBA, a quantidade de setores e o SHA-256.",
+                    false,
+                )
             }
-            _state.value = _state.value.copy(running = false, resultMessage = message)
+            _state.value = _state.value.copy(
+                running = false,
+                resultMessage = result.message,
+                verificationPassed = result.passed,
+            )
         }
     }
 
@@ -192,6 +224,11 @@ class LocalBackupVerificationViewModel : ViewModel() {
         manifestRequestGeneration += 1L
         super.onCleared()
     }
+
+    private data class VerificationExecutionResult(
+        val message: String,
+        val passed: Boolean,
+    )
 
     private sealed interface ManifestLoadResult {
         data class Success(val manifest: RockchipBackupManifest) : ManifestLoadResult
